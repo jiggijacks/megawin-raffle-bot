@@ -209,4 +209,4 @@ async def cmd_winners(message: Message):
             await message.answer(f"🏆 Winner: @{user.username or user.telegram_id}\nTicket #{winner.id}")
 
 
-@dp.message(Command
+@dp.message(Command)
