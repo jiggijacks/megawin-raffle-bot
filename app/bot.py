@@ -1,10 +1,10 @@
 import os
-import asyncio
 import logging
 import random
 import aiohttp
 from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
+import uvicorn
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
