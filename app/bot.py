@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 import random
 import aiohttp
@@ -9,13 +8,11 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.enums import ParseMode
 from sqlalchemy import select, func
 
 from app.database import async_session, init_db, User, RaffleEntry
-
-
 
 # ---------------------------------------------------------
 # ENVIRONMENT + CONFIG
@@ -47,7 +44,6 @@ bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 app = FastAPI()
 
-
 # ---------------------------------------------------------
 # DB UTILITIES
 # ---------------------------------------------------------
@@ -65,7 +61,6 @@ async def get_or_create_user(telegram_id: int, username: str | None = None):
             session.add(new)
             await session.flush()
             return new
-
 
 # ---------------------------------------------------------
 # TELEGRAM COMMANDS
@@ -296,8 +291,6 @@ async def paystack_webhook(request: Request):
 # ---------------------------------------------------------
 # FASTAPI: TELEGRAM WEBHOOK
 # ---------------------------------------------------------
-from aiogram.types import Update
-
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     try:
@@ -308,7 +301,6 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
-
 
 
 # -----------------------
