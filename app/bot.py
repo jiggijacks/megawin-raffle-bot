@@ -1,10 +1,11 @@
 import os
+import asyncio
 import logging
 import random
 import aiohttp
+import uvicorn
 from fastapi import FastAPI, Request, Response
 from dotenv import load_dotenv
-import uvicorn
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -13,6 +14,8 @@ from aiogram.enums import ParseMode
 from sqlalchemy import select, func
 
 from app.database import async_session, init_db, User, RaffleEntry
+
+
 
 # ---------------------------------------------------------
 # ENVIRONMENT + CONFIG
@@ -300,29 +303,43 @@ async def telegram_webhook(request: Request):
     return Response(status_code=200)
 
 
-# ---------------------------------------------------------
-# MAIN ENTRY (WEBHOOK ONLY)
-# ---------------------------------------------------------
+# -----------------------
+# Start bot via webhook (Railway mode)
+# -----------------------
 async def main():
     await init_db()
-    logger.info("✅ Database initialized")
+    logging.info("✅ Database initialized")
 
-    try:
+    # Remove any old webhook (just to be safe)
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    # Set webhook to your Railway domain
+    webhook_url = os.getenv("WEBHOOK_URL", "https://megawinraffle.up.railway.app/webhook/telegram")
+    await bot.set_webhook(
+        url=webhook_url,
+        allowed_updates=["message", "callback_query"]
+    )
+    logging.info(f"✅ Webhook set successfully at {webhook_url}")
+
+    # Start FastAPI server
+    config = uvicorn.Config(app=app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    server = uvicorn.Server(config)
+    await server.serve()
+
+if __name__ == "__main__":
+    import asyncio
+    import uvicorn
+
+    async def on_startup():
+        await init_db()
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(
-            url="https://megawinraffle.up.railway.app/webhook/telegram",
+            url=WEBHOOK_URL,
             allowed_updates=["message", "callback_query"],
         )
         logger.info("✅ Webhook set successfully at /webhook/telegram")
-    except Exception as e:
-        logger.error(f"❌ Failed to set webhook: {e}")
 
-    logger.info("🌐 Running on Railway (Webhook mode only)")
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    asyncio.run(on_startup())
 
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    app = asyncio.run(main())
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    logger.info("🌐 Starting FastAPI app...")
+    uvicorn.run("app.bot:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
