@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Update
 from aiogram.enums import ParseMode
 from sqlalchemy import select, func
 
@@ -71,6 +71,9 @@ async def cmd_start(message: Message, command: Command):
     username = message.from_user.username
     user = await get_or_create_user(telegram_id, username)
 
+    # Generate referral link consistently
+    link = f"https://t.me/{(await bot.get_me()).username}?start={telegram_id}"
+
     args = (command.args or "").strip()
     if args:
         try:
@@ -90,9 +93,6 @@ async def cmd_start(message: Message, command: Command):
                                 await bot.send_message(ref_user.telegram_id, "🎉 You referred 5 users and earned a free ticket!")
         except ValueError:
             pass
-
-    me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start={telegram_id}"
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[  # buttons for users
         [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
@@ -187,72 +187,6 @@ async def cmd_referrals(message: Message):
             await message.answer(f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}")
 
 
-@dp.message(Command("winners"))
-async def cmd_winners(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only admin can run this command.")
-        return
-    async with async_session() as s:
-        async with s.begin():
-            q = await s.execute(select(RaffleEntry))
-            entries = q.scalars().all()
-            if not entries:
-                await message.answer("No tickets yet.")
-                return
-            winner = random.choice(entries)
-            q2 = await s.execute(select(User).filter_by(id=winner.user_id))
-            user = q2.scalar_one_or_none()
-            await message.answer(f"🏆 Winner: @{user.username or user.telegram_id}\nTicket #{winner.id}")
-            
-            # Reset all tickets after selecting a winner
-            await s.execute('DELETE FROM raffle_entries')
-            await s.commit()  # Commit the changes to reset all tickets
-
-
-@dp.message(Command("buyers"))
-async def cmd_buyers(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only admin can view the active users.")
-        return
-    
-    async with async_session() as s:
-        async with s.begin():
-            q = await s.execute(select(RaffleEntry).filter(RaffleEntry.payment_ref != None))  # Filter only purchased tickets
-            users = q.scalars().all()
-            if not users:
-                await message.answer("No users have purchased tickets yet.")
-                return
-            msg = "\n".join(
-                f"User ID: {user.user_id}, Ticket ID: {user.id}, Purchased at: {user.created_at}"
-                for user in users
-            )
-            await message.answer(f"👥 Active Users:\n{msg}")
-
-
-# ---------------------------------------------------------
-# CALLBACK HANDLERS
-# ---------------------------------------------------------
-@dp.callback_query(F.data == "buy_ticket")
-async def cb_buy(callback: CallbackQuery):
-    await cmd_buy(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "view_tickets")
-async def cb_tickets(callback: CallbackQuery):
-    await cmd_ticket(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "my_referrals")
-async def cb_ref(callback: CallbackQuery):
-    await cmd_referrals(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "help_cmd")
-async def cb_help(callback: CallbackQuery):
-    await cmd_help(callback.message)
-    await callback.answer()
-
-
 # ---------------------------------------------------------
 # FASTAPI: PAYSTACK WEBHOOK
 # ---------------------------------------------------------
@@ -301,7 +235,6 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
-
 
 # -----------------------
 # Start bot via webhook (Railway mode)
