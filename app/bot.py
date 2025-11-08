@@ -296,11 +296,19 @@ async def paystack_webhook(request: Request):
 # ---------------------------------------------------------
 # FASTAPI: TELEGRAM WEBHOOK
 # ---------------------------------------------------------
+from aiogram.types import Update
+
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    await dp.feed_update(bot, data)
-    return Response(status_code=200)
+    try:
+        data = await request.json()
+        update = Update.model_validate(data)  # ✅ convert raw dict → Update object
+        await dp.feed_update(bot, update)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"❌ Telegram webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
 
 
 # -----------------------
