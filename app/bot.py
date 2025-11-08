@@ -94,31 +94,54 @@ async def cmd_start(message: Message, command: Command):
         except ValueError:
             pass
 
-    # Updated description of the bot
+    # Updated description with more details about the bot's features
     bot_description = (
-        "MegaWin Raffle is an exciting way to win amazing prizes! 🎉\n\n"
-        "You can participate by purchasing tickets, referring friends to join, "
-        "and earning chances to win awesome prizes. Here's what you can do:\n\n"
-        "🎟 Buy a ticket\n"
-        "🎫 View your tickets\n"
-        "👥 Share your referral link to earn rewards\n"
-        "❓ Need help? Get started right away!"
+        "🎉 Welcome to MegaWin Raffle!\n\n"
+        "💰 Participate by purchasing a ticket for ₦500 and stand a chance to win exciting prizes!\n"
+        "🎟 Check your tickets and track your chances of winning!\n"
+        "👥 Invite friends with your referral link to earn a free ticket after referring 5 people!\n"
+        "Use the options below to get started."
     )
 
-    # Corrected creation of inline keyboard
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket"))
-    keyboard.add(InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets"))
-    keyboard.add(InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals"))
-    keyboard.add(InlineKeyboardButton(text="❓ Help", callback_data="help_cmd"))
+    # Updated keyboard with more detailed inline buttons
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket"),
+        InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets"),
+        InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals"),
+        InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")
+    )
 
+    # Send the updated welcome message with detailed information
     await message.answer(
-        f"🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
+        f"<b>Welcome to MegaWin Raffle!</b>\n\n"
         f"{bot_description}\n\n"
         f"Invite friends with your link:\n{link}\n\n"
         f"Use the buttons below to get started 👇",
         reply_markup=keyboard
     )
+
+# Define the callback queries
+@dp.callback_query(F.data == "buy_ticket")
+async def cb_buy(callback: CallbackQuery):
+    await cmd_buy(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "view_tickets")
+async def cb_tickets(callback: CallbackQuery):
+    await cmd_ticket(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_referrals")
+async def cb_ref(callback: CallbackQuery):
+    await cmd_referrals(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "help_cmd")
+async def cb_help(callback: CallbackQuery):
+    await cmd_help(callback.message)
+    await callback.answer()
+
 
 
 
