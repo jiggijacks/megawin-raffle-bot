@@ -30,10 +30,7 @@ if not BOT_TOKEN:
 # ---------------------------------------------------------
 # LOGGING
 # ---------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
 logger.info("✅ BOT_TOKEN loaded successfully")
 
@@ -120,29 +117,6 @@ async def cmd_start(message: Message, command: Command):
         f"Use the buttons below to get started 👇",
         reply_markup=keyboard
     )
-
-# Define the callback queries
-@dp.callback_query(F.data == "buy_ticket")
-async def cb_buy(callback: CallbackQuery):
-    await cmd_buy(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "view_tickets")
-async def cb_tickets(callback: CallbackQuery):
-    await cmd_ticket(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "my_referrals")
-async def cb_ref(callback: CallbackQuery):
-    await cmd_referrals(callback.message)
-    await callback.answer()
-
-@dp.callback_query(F.data == "help_cmd")
-async def cb_help(callback: CallbackQuery):
-    await cmd_help(callback.message)
-    await callback.answer()
-
-
 
 
 @dp.message(Command("help"))
@@ -272,9 +246,10 @@ async def telegram_webhook(request: Request):
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
-# -----------------------
-# Start bot via webhook (Railway mode)
-# -----------------------
+
+# ---------------------------------------------------------
+# FASTAPI SERVER AND BOT STARTUP
+# ---------------------------------------------------------
 async def main():
     await init_db()
     logging.info("✅ Database initialized")
