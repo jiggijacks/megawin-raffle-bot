@@ -94,19 +94,32 @@ async def cmd_start(message: Message, command: Command):
         except ValueError:
             pass
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[  # buttons for users
-        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
-        [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
-        [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
-        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")]
-    ])
+    # Updated description of the bot
+    bot_description = (
+        "MegaWin Raffle is an exciting way to win amazing prizes! 🎉\n\n"
+        "You can participate by purchasing tickets, referring friends to join, "
+        "and earning chances to win awesome prizes. Here's what you can do:\n\n"
+        "🎟 Buy a ticket\n"
+        "🎫 View your tickets\n"
+        "👥 Share your referral link to earn rewards\n"
+        "❓ Need help? Get started right away!"
+    )
+
+    # Corrected creation of inline keyboard
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket"))
+    keyboard.add(InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets"))
+    keyboard.add(InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals"))
+    keyboard.add(InlineKeyboardButton(text="❓ Help", callback_data="help_cmd"))
 
     await message.answer(
         f"🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
+        f"{bot_description}\n\n"
         f"Invite friends with your link:\n{link}\n\n"
         f"Use the buttons below to get started 👇",
         reply_markup=keyboard
     )
+
 
 
 @dp.message(Command("help"))
