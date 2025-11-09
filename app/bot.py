@@ -202,49 +202,69 @@ async def cmd_referrals(message: Message):
 # ---------------------------------------------------------
 @app.post("/webhook/paystack")
 async def paystack_webhook(request: Request):
-    data = await request.json()
-    event = data.get("event")
-    logger.info(f"📩 Paystack event: {event}")
-    if event != "charge.success":
-        return {"status": "ignored"}
-
-    telegram_id = data["data"]["metadata"].get("telegram_id")
-    ref = data["data"].get("reference")
-
-    async with async_session() as s:
-        async with s.begin():
-            q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
-            user = q.scalar_one_or_none()
-            if not user:
-                user = User(telegram_id=telegram_id)
-                s.add(user)
-                await s.flush()
-
-            q2 = await s.execute(select(RaffleEntry).filter_by(payment_ref=ref))
-            entry = q2.scalar_one_or_none()
-            if not entry:
-                s.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
-                await bot.send_message(
-                    telegram_id,
-                    "✅ <b>Payment confirmed!</b>\nYour raffle ticket has been added.\nUse /ticket to view your tickets.",
-                    parse_mode="HTML"
-                )
-    return {"status": "ok"}
-
-
-# ---------------------------------------------------------
-# FASTAPI: TELEGRAM WEBHOOK
-# ---------------------------------------------------------
-@app.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
     try:
         data = await request.json()
-        update = Update.model_validate(data)  # ✅ convert raw dict → Update object
-        await dp.feed_update(bot, update)
-        return {"status": "ok"}
+        event = data.get("event")
+        logging.info(f"📩 Received Paystack event: {event}")
+        logging.info(f"🔍 Payload: {data}")
+
+        if event != "charge.success":
+            return {"status": "ignored", "reason": "not a successful charge"}
+
+        payment_data = data.get("data", {})
+        telegram_id = payment_data.get("metadata", {}).get("telegram_id")
+        reference = payment_data.get("reference")
+
+        if not telegram_id or not reference:
+            logging.warning("⚠️ Missing telegram_id or reference in webhook payload.")
+            return {"status": "error", "reason": "invalid payload"}
+
+        async with async_session() as session:
+            async with session.begin():
+                q = await session.execute(select(User).filter_by(telegram_id=telegram_id))
+                user = q.scalar_one_or_none()
+                if not user:
+                    user = User(telegram_id=telegram_id)
+                    session.add(user)
+                    await session.flush()
+
+                # Check if this reference already exists
+                q2 = await session.execute(select(RaffleEntry).filter_by(payment_ref=reference))
+                entry = q2.scalar_one_or_none()
+
+                if entry:
+                    logging.info(f"✅ Payment already recorded for {reference}")
+                else:
+                    entry = RaffleEntry(user_id=user.id, payment_ref=reference, free_ticket=False)
+                    session.add(entry)
+                    logging.info(f"🎟️ New raffle ticket created for user {telegram_id}")
+
+        # ✅ Only notify real users, not bots
+        try:
+            user_info = await bot.get_chat(telegram_id)
+            if not user_info.is_bot:
+                await bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "✅ <b>Payment confirmed!</b>\n\n"
+                        "🎟️ Your raffle ticket has been added successfully.\n"
+                        "Use /ticket to view your tickets. Good luck! 🍀"
+                    ),
+                    parse_mode="HTML"
+                )
+                logging.info(f"💬 Confirmation message sent to user {telegram_id}")
+            else:
+                logging.warning(f"⛔ Skipping message — recipient {telegram_id} is a bot.")
+
+        except Exception as e:
+            logging.error(f"⚠️ Failed to send Telegram message: {e}")
+
+        return {"status": "success", "reference": reference}
+
     except Exception as e:
-        logger.error(f"❌ Telegram webhook error: {e}")
-        return {"status": "error", "message": str(e)}
+        logging.exception(f"🔥 Webhook error: {e}")
+        return {"status": "error", "details": str(e)}
+
 
 
 # ---------------------------------------------------------
