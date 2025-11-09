@@ -1,309 +1,273 @@
+# app/bot.py
 import os
 import logging
 import random
 import aiohttp
 import uvicorn
-from fastapi import FastAPI, Request, Response
-from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Update
+from fastapi import FastAPI, Request, HTTPException, Response
+
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
+from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    BotCommand,
+    Update
+)
 from sqlalchemy import select, func
 
+# your own DB utilities / models
 from app.database import async_session, init_db, User, RaffleEntry
 
 # ---------------------------------------------------------
-# ENVIRONMENT + CONFIG
+# ENVIRONMENT
 # ---------------------------------------------------------
-load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-PORT = int(os.getenv("PORT", "8000"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://megawinraffle.up.railway.app/webhook/telegram")
+PORT = int(os.getenv("PORT", "8080"))
+
+PUBLIC_URL = os.getenv("PUBLIC_URL", "https://megawinraffle.up.railway.app")
+TELEGRAM_WEBHOOK_PATH = "/webhook/telegram"
+PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
 
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN not set in environment!")
+    raise RuntimeError("❌ BOT_TOKEN not set in environment")
 
 # ---------------------------------------------------------
 # LOGGING
 # ---------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-logger.info("✅ BOT_TOKEN loaded successfully")
+logger.info("✅ Environment loaded")
 
 # ---------------------------------------------------------
-# SETUP BOT + FASTAPI
+# BOT / DISPATCHER / FASTAPI
 # ---------------------------------------------------------
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 app = FastAPI()
 
 # ---------------------------------------------------------
-# DB UTILITIES
+# HELPERS
 # ---------------------------------------------------------
 async def get_or_create_user(telegram_id: int, username: str | None = None):
     async with async_session() as session:
-        async with session.begin():
-            q = await session.execute(select(User).filter_by(telegram_id=telegram_id))
-            user = q.scalar_one_or_none()
-            if user:
-                if username and user.username != username:
-                    user.username = username
-                    session.add(user)
-                return user
-            new = User(telegram_id=telegram_id, username=username)
-            session.add(new)
-            await session.flush()
-            return new
+        q = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = q.scalar_one_or_none()
+        if user:
+            if username and user.username != username:
+                user.username = username
+                await session.commit()
+            return user
+        user = User(telegram_id=telegram_id, username=username)
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+
+async def set_bot_commands():
+    cmds = [
+        BotCommand(command="start", description="Start / Referral link"),
+        BotCommand(command="help", description="How to use the bot"),
+        BotCommand(command="buy", description="Buy a raffle ticket (₦500)"),
+        BotCommand(command="ticket", description="View your tickets"),
+        BotCommand(command="referrals", description="Your referral count"),
+    ]
+    await bot.set_my_commands(cmds)
 
 # ---------------------------------------------------------
-# TELEGRAM COMMANDS
+# COMMAND HANDLERS
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
-    telegram_id = message.from_user.id
+    tg_id = message.from_user.id
     username = message.from_user.username
-    user = await get_or_create_user(telegram_id, username)
+    await get_or_create_user(tg_id, username)
 
-    # Generate referral link consistently
-    link = f"https://t.me/{(await bot.get_me()).username}?start={telegram_id}"
+    me = await bot.get_me()
+    ref_link = f"https://t.me/{me.username}?start={tg_id}"
 
-    args = (command.args or "").strip()
-    if args:
-        try:
-            ref_id = int(args)
-            if ref_id != telegram_id:
-                async with async_session() as session:
-                    async with session.begin():
-                        q = await session.execute(select(User).filter_by(telegram_id=ref_id))
-                        ref_user = q.scalar_one_or_none()
-                        if ref_user:
-                            ref_user.referral_count = (ref_user.referral_count or 0) + 1
-                            session.add(ref_user)
-                            if ref_user.referral_count >= 5:
-                                ticket = RaffleEntry(user_id=ref_user.id, free_ticket=True)
-                                session.add(ticket)
-                                ref_user.referral_count -= 5
-                                await bot.send_message(ref_user.telegram_id, "🎉 You referred 5 users and earned a free ticket!")
-        except ValueError:
-            pass
-
-    # Updated description with more details about the bot's features
-    bot_description = (
-        "🎉 Welcome to MegaWin Raffle!\n\n"
-        "💰 Participate by purchasing a ticket for ₦500 and stand a chance to win exciting prizes!\n"
-        "🎟 Check your tickets and track your chances of winning!\n"
-        "👥 Invite friends with your referral link to earn a free ticket after referring 5 people!\n"
-        "Use the options below to get started."
+    # ✅ Improved welcome message
+    bot_intro = (
+        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
+        "💰 Buy tickets to win amazing cash prizes.\n"
+        "🎟 Each ticket costs ₦500 and increases your chance of winning.\n"
+        "👥 Invite 5 friends with your referral link to get 1 free ticket!\n\n"
+        "Use the buttons below to start playing 👇"
     )
 
-    # Updated keyboard with more detailed inline buttons
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket"),
-        InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets"),
-        InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals"),
-        InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+        [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
+        [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
+        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+    ])
 
-    # Send the updated welcome message with detailed information
     await message.answer(
-        f"<b>Welcome to MegaWin Raffle!</b>\n\n"
-        f"{bot_description}\n\n"
-        f"Invite friends with your link:\n{link}\n\n"
-        f"Use the buttons below to get started 👇",
-        reply_markup=keyboard
+        f"{bot_intro}\n\n🔗 Your referral link:\n<code>{ref_link}</code>",
+        reply_markup=kb
     )
-
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
-        "💡 How to play:\n"
+        "💡 <b>How to play</b>\n"
         "• /buy — Buy a raffle ticket (₦500)\n"
         "• /ticket — View your tickets\n"
         "• /referrals — See your referral count\n\n"
-        "Admin only:\n"
+        "<b>Admin only</b>:\n"
         "• /winners — pick a random winner\n"
-        "• /buyers — view active users\n"
         "• /stats — view platform stats"
     )
 
-
 @dp.message(Command("buy"))
 async def cmd_buy(message: Message):
-    telegram_id = message.from_user.id
-    username = message.from_user.username
-    user = await get_or_create_user(telegram_id, username)
-
     if not PAYSTACK_SECRET_KEY:
         await message.answer("❌ Paystack key not set.")
         return
 
-    async with aiohttp.ClientSession() as session:
+    tg_id = message.from_user.id
+    username = message.from_user.username
+    user = await get_or_create_user(tg_id, username)
+    callback_url = f"{PUBLIC_URL}{PAYSTACK_WEBHOOK_PATH}"
+
+    async with aiohttp.ClientSession() as s:
+        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
         payload = {
-            "email": f"user_{telegram_id}@megawinraffle.com",
+            "email": f"user_{tg_id}@megawinraffle.com",
             "amount": 500 * 100,
-            "metadata": {"telegram_id": telegram_id},
-            "callback_url": WEBHOOK_URL
+            "metadata": {"telegram_id": tg_id},
+            "callback_url": callback_url,
         }
-        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
-        async with session.post("https://api.paystack.co/transaction/initialize", json=payload, headers=headers) as resp:
+        async with s.post("https://api.paystack.co/transaction/initialize", headers=headers, json=payload) as resp:
             res = await resp.json()
 
     if res.get("status"):
         ref = res["data"]["reference"]
         pay_url = res["data"]["authorization_url"]
-        # Save the payment reference here to check after successful payment
-        await message.answer(f"💳 Click below to pay ₦500:\n{pay_url}")
+
+        async with async_session() as s:
+            s.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
+            await s.commit()
+
+        await message.answer(
+            f"💳 <b>Payment</b>\nClick below to complete your payment:\n"
+            f"👉 <a href='{pay_url}'>Pay ₦500 via Paystack</a>\n\n"
+            f"Once payment is confirmed, your ticket will be added automatically. ✅",
+            disable_web_page_preview=True,
+        )
     else:
-        await message.answer("❌ Could not start Paystack payment.")
-
-
-@dp.message(Command("ticket"))
-async def cmd_ticket(message: Message):
-    telegram_id = message.from_user.id
-    async with async_session() as s:
-        async with s.begin():
-            q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
-            user = q.scalar_one_or_none()
-            if not user:
-                await message.answer("🚫 You don't have any tickets yet.")
-                return
-            q2 = await s.execute(select(RaffleEntry).filter_by(user_id=user.id))
-            tickets = q2.scalars().all()
-            if not tickets:
-                await message.answer("🚫 You have no tickets yet. Use /buy.")
-                return
-            msg = "\n".join(
-                f"🎫 #{t.id} | {'Free' if t.free_ticket else 'Paid'} | {t.created_at.strftime('%Y-%m-%d %H:%M')}"
-                for t in tickets
-            )
-            await message.answer(msg)
-
-
-@dp.message(Command("referrals"))
-async def cmd_referrals(message: Message):
-    telegram_id = message.from_user.id
-    async with async_session() as s:
-        async with s.begin():
-            q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
-            user = q.scalar_one_or_none()
-            count = user.referral_count if user else 0
-            link = f"https://t.me/{(await bot.get_me()).username}?start={telegram_id}"
-            await message.answer(f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}")
-
+        await message.answer("❌ Could not start Paystack payment. Try again.")
 
 # ---------------------------------------------------------
-# FASTAPI: PAYSTACK WEBHOOK
+# CALLBACKS
 # ---------------------------------------------------------
-@app.post("/webhook/paystack")
-async def paystack_webhook(request: Request):
+@dp.callback_query(F.data == "buy_ticket")
+async def cb_buy(callback: CallbackQuery):
+    await cmd_buy(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "view_tickets")
+async def cb_tickets(callback: CallbackQuery):
+    await cmd_ticket(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_referrals")
+async def cb_ref(callback: CallbackQuery):
+    await cmd_referrals(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "help_cmd")
+async def cb_help(callback: CallbackQuery):
+    await cmd_help(callback.message)
+    await callback.answer()
+
+# ---------------------------------------------------------
+# TELEGRAM WEBHOOK
+# ---------------------------------------------------------
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
     try:
         data = await request.json()
-        event = data.get("event")
-        logging.info(f"📩 Received Paystack event: {event}")
-        logging.info(f"🔍 Payload: {data}")
-
-        if event != "charge.success":
-            return {"status": "ignored", "reason": "not a successful charge"}
-
-        payment_data = data.get("data", {})
-        telegram_id = payment_data.get("metadata", {}).get("telegram_id")
-        reference = payment_data.get("reference")
-
-        if not telegram_id or not reference:
-            logging.warning("⚠️ Missing telegram_id or reference in webhook payload.")
-            return {"status": "error", "reason": "invalid payload"}
-
-        async with async_session() as session:
-            async with session.begin():
-                q = await session.execute(select(User).filter_by(telegram_id=telegram_id))
-                user = q.scalar_one_or_none()
-                if not user:
-                    user = User(telegram_id=telegram_id)
-                    session.add(user)
-                    await session.flush()
-
-                # Check if this reference already exists
-                q2 = await session.execute(select(RaffleEntry).filter_by(payment_ref=reference))
-                entry = q2.scalar_one_or_none()
-
-                if entry:
-                    logging.info(f"✅ Payment already recorded for {reference}")
-                else:
-                    entry = RaffleEntry(user_id=user.id, payment_ref=reference, free_ticket=False)
-                    session.add(entry)
-                    logging.info(f"🎟️ New raffle ticket created for user {telegram_id}")
-
-        # ✅ Only notify real users, not bots
-        try:
-            user_info = await bot.get_chat(telegram_id)
-            if not user_info.is_bot:
-                await bot.send_message(
-                    chat_id=telegram_id,
-                    text=(
-                        "✅ <b>Payment confirmed!</b>\n\n"
-                        "🎟️ Your raffle ticket has been added successfully.\n"
-                        "Use /ticket to view your tickets. Good luck! 🍀"
-                    ),
-                    parse_mode="HTML"
-                )
-                logging.info(f"💬 Confirmation message sent to user {telegram_id}")
-            else:
-                logging.warning(f"⛔ Skipping message — recipient {telegram_id} is a bot.")
-
-        except Exception as e:
-            logging.error(f"⚠️ Failed to send Telegram message: {e}")
-
-        return {"status": "success", "reference": reference}
-
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return {"status": "ok"}
     except Exception as e:
-        logging.exception(f"🔥 Webhook error: {e}")
-        return {"status": "error", "details": str(e)}
-
-
+        logger.error(f"❌ Telegram webhook error: {e}")
+        return {"status": "error", "message": str(e)}
 
 # ---------------------------------------------------------
-# FASTAPI SERVER AND BOT STARTUP
+# PAYSTACK WEBHOOK
 # ---------------------------------------------------------
-async def main():
-    await init_db()
-    logging.info("✅ Database initialized")
+@app.post(PAYSTACK_WEBHOOK_PATH)
+async def paystack_webhook(request: Request):
+    payload = await request.json()
+    event = payload.get("event")
+    data = payload.get("data", {})
+    logger.info(f"📩 Paystack event: {event}")
 
-    # Remove any old webhook (just to be safe)
-    await bot.delete_webhook(drop_pending_updates=True)
+    if event != "charge.success":
+        return {"status": "ignored"}
 
-    # Set webhook to your Railway domain
-    webhook_url = os.getenv("WEBHOOK_URL", "https://megawinraffle.up.railway.app/webhook/telegram")
-    await bot.set_webhook(
-        url=webhook_url,
-        allowed_updates=["message", "callback_query"]
-    )
-    logging.info(f"✅ Webhook set successfully at {webhook_url}")
+    tg_id = data.get("metadata", {}).get("telegram_id")
+    ref = data.get("reference")
 
-    # Start FastAPI server
-    config = uvicorn.Config(app=app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-    server = uvicorn.Server(config)
-    await server.serve()
+    async with async_session() as db:
+        uq = await db.execute(select(User).where(User.telegram_id == tg_id))
+        user = uq.scalar_one_or_none()
+        if not user:
+            user = User(telegram_id=tg_id)
+            db.add(user)
+            await db.flush()
 
-if __name__ == "__main__":
-    import asyncio
-    import uvicorn
+        q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
+        entry = q.scalar_one_or_none()
+        if not entry:
+            entry = RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False)
+            db.add(entry)
+        await db.commit()
 
-    async def on_startup():
-        await init_db()
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(
-            url=WEBHOOK_URL,
-            allowed_updates=["message", "callback_query"],
+    try:
+        await bot.send_message(
+            chat_id=int(tg_id),
+            text="✅ Payment confirmed! Your raffle ticket has been added.\nUse /ticket to view it.",
         )
-        logger.info("✅ Webhook set successfully at /webhook/telegram")
+    except Exception as e:
+        logger.warning(f"Failed to notify user {tg_id}: {e}")
 
-    asyncio.run(on_startup())
+    return {"status": "ok"}
 
-    logger.info("🌐 Starting FastAPI app...")
-    uvicorn.run("app.bot:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+# ---------------------------------------------------------
+# STARTUP / SHUTDOWN
+# ---------------------------------------------------------
+@app.on_event("startup")
+async def on_startup():
+    await init_db()
+    await set_bot_commands()
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}",
+                              allowed_updates=["message", "callback_query"])
+        logger.info("✅ Telegram webhook set")
+    except Exception as e:
+        logger.error(f"❌ Failed to set webhook: {e}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
