@@ -149,17 +149,19 @@ async def cmd_start(message: Message, command: Command):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
+    """Show help and available commands."""
     await message.answer(
         "💡 <b>How to Play</b>\n"
         "• /buy — Buy a raffle ticket (₦500)\n"
         "• /ticket — View your tickets & balance\n"
-        "• /userstat — See your lifetime activity\n"
-        "• /balance — Check your spend & referral rewards\n"
-        "• /help — Show this message\n\n"
+        "• /userstat — View your lifetime stats\n"
+        "• /balance — Check spend & referral rewards\n"
+        "• /help — Show this help guide\n\n"
         "<b>Admin Only:</b>\n"
-        "• /winners — Pick a random winner\n"
-        "• /stats — Platform-wide stats"
+        "• /winners — Pick random winner and reset\n"
+        "• /stats — Platform-wide analytics"
     )
+
 
 
 @dp.message(Command("buy"))
@@ -201,6 +203,7 @@ async def cmd_buy(message: Message):
 
 @dp.message(Command("winners"))
 async def cmd_winners(message: Message):
+    """Pick a random winner and reset all tickets."""
     if message.from_user.id != ADMIN_ID:
         await message.answer("🚫 Only admin can run this command.")
         return
@@ -220,13 +223,15 @@ async def cmd_winners(message: Message):
             f"🏆 <b>Winner:</b> @{user.username or user.telegram_id}\n🎫 Ticket #{winner.id}"
         )
 
-        # Reset all tickets
+        # Reset tickets after drawing
         await s.execute("DELETE FROM raffle_entries")
         await s.commit()
         await message.answer("🔁 All tickets have been reset for the next round!")
 
+
 @dp.message(Command("userstat"))
 async def cmd_userstat(message: Message):
+    """Show user's lifetime statistics."""
     tg_id = message.from_user.id
     async with async_session() as s:
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
@@ -243,16 +248,17 @@ async def cmd_userstat(message: Message):
         paid_tickets = total_tickets - free_tickets
         total_spent = paid_tickets * 500
         total_earned = free_tickets * 500
-        balance = total_earned - total_spent
+        balance = abs(total_earned - total_spent)
 
         await message.answer(
             f"📊 <b>Your MegaWin Stats</b>\n\n"
             f"🎟 Total Tickets: {total_tickets}\n"
             f"💸 Total Spent: ₦{total_spent:,}\n"
             f"🎁 Free Tickets Earned: {free_tickets}\n"
-            f"💰 Net Balance: ₦{abs(balance):,}\n"
+            f"💰 Net Balance: ₦{balance:,}\n"
             f"🏆 Wins: Coming soon!"
         )
+
 
 
 @dp.message(Command("stats"))
@@ -303,7 +309,7 @@ async def cmd_ticket(message: Message):
         paid_tickets = total_tickets - free_tickets
         total_value = paid_tickets * 500
         balance_value = free_tickets * 500 - paid_tickets * 500
-        balance_display = abs(balance_value)  # remove negative sign
+        balance_display = abs(balance_value)
 
         await message.answer(
             f"🎟 <b>Your Ticket Summary</b>\n\n"
@@ -313,36 +319,36 @@ async def cmd_ticket(message: Message):
         )
 
 
+
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
-    """Show how much a user has spent and earned from referrals."""
+    """Show user's balance summary."""
     telegram_id = message.from_user.id
 
     async with async_session() as s:
         async with s.begin():
-            # Get user
             q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
             user = q.scalar_one_or_none()
             if not user:
                 await message.answer("🚫 You don't have any transactions yet.")
                 return
 
-            # Tickets bought (each ₦500)
             q_tickets = await s.execute(select(RaffleEntry).filter_by(user_id=user.id))
             tickets = q_tickets.scalars().all()
             paid_tickets = [t for t in tickets if not t.free_ticket]
             free_tickets = [t for t in tickets if t.free_ticket]
 
             spent = len(paid_tickets) * 500
-            earned = len(free_tickets) * 500  # free tickets = referral rewards
-            balance = earned - spent
+            earned = len(free_tickets) * 500
+            balance = abs(earned - spent)
 
             await message.answer(
                 f"💰 <b>Your Balance Summary</b>\n\n"
-                f"🪙 Tickets Bought: {len(paid_tickets)} (₦{spent})\n"
-                f"🎁 Free Tickets Earned: {len(free_tickets)} (₦{earned})\n\n"
-                f"📊 <b>Net Balance:</b> ₦{balance}"
+                f"🪙 Tickets Bought: {len(paid_tickets)} (₦{spent:,})\n"
+                f"🎁 Free Tickets Earned: {len(free_tickets)} (₦{earned:,})\n\n"
+                f"📊 <b>Net Balance:</b> ₦{balance:,}"
             )
+
 
 
 
