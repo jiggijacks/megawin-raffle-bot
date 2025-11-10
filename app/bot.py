@@ -89,33 +89,62 @@ async def set_bot_commands():
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
-    telegram_id = message.from_user.id
+    """Welcome message with referral link and action buttons."""
+    tg_id = message.from_user.id
     username = message.from_user.username
-    user = await get_or_create_user(telegram_id, username)
+    user = await get_or_create_user(tg_id, username)
 
+    # Handle referral logic
+    args = (command.args or "").strip()
+    if args:
+        try:
+            ref_tg_id = int(args)
+            if ref_tg_id != tg_id:
+                async with async_session() as s:
+                    q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
+                    ref_user = q.scalar_one_or_none()
+                    if ref_user:
+                        current = getattr(ref_user, "referral_count", 0) or 0
+                        ref_user.referral_count = current + 1
+                        s.add(ref_user)
+
+                        if ref_user.referral_count >= 5:
+                            entry = RaffleEntry(user_id=ref_user.id, free_ticket=True)
+                            s.add(entry)
+                            ref_user.referral_count -= 5
+                            await s.commit()
+                            try:
+                                await bot.send_message(
+                                    ref_user.telegram_id,
+                                    "🎉 <b>You referred 5 users and earned a FREE ticket!</b>",
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to notify referrer: {e}")
+                        else:
+                            await s.commit()
+        except ValueError:
+            pass
+
+    # Generate consistent referral link
     me = await bot.get_me()
-    ref_link = f"https://t.me/{me.username}?start={telegram_id}"
+    ref_link = f"https://t.me/{me.username}?start={tg_id}"
 
-    # ✅ Improved welcome message
-    bot_intro = (
-        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
-        "💰 Buy tickets to win amazing cash prizes.\n"
-        "🎟 Each ticket costs ₦500 and increases your chance of winning.\n"
-        "👥 Invite 5 friends with your referral link to get 1 free ticket!\n\n"
-        "Use the buttons below to start playing 👇"
-    )
-
+    # Buttons (Referrals replaced with Balance)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
-    [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
-    [InlineKeyboardButton(text="💰 My Balance", callback_data="my_balance")],
-    [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
-])
+        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+        [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
+        [InlineKeyboardButton(text="💰 My Balance", callback_data="my_balance")],
+        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+    ])
 
-
+    # Informative welcome message
     await message.answer(
-        f"{bot_intro}\n\n🔗 Your referral link:\n<code>{ref_link}</code>",
-        reply_markup=kb
+        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
+        "💰 Buy raffle tickets for ₦500 each and stand a chance to win amazing prizes!\n"
+        "👥 Invite friends using your referral link — 5 successful referrals earn you 1 free ticket!\n\n"
+        f"🔗 <b>Your Referral Link:</b>\n<code>{ref_link}</code>\n\n"
+        "Use the buttons below to get started 👇",
+        reply_markup=kb,
     )
 
 @dp.message(Command("help"))
