@@ -166,6 +166,61 @@ async def cmd_buy(message: Message):
     else:
         await message.answer("❌ Could not start Paystack payment. Try again.")
 
+@dp.message(Command("winners"))
+async def cmd_winners(message: Message):
+    """Admin-only: pick a random winner and reset tickets."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Only the admin can use this command.")
+        return
+
+    async with async_session() as s:
+        q = await s.execute(select(RaffleEntry))
+        entries = q.scalars().all()
+        if not entries:
+            await message.answer("📭 No raffle tickets yet.")
+            return
+
+        winner = random.choice(entries)
+        q2 = await s.execute(select(User).where(User.id == winner.user_id))
+        user = q2.scalar_one_or_none()
+
+        winner_name = (
+            f"@{user.username}" if user and user.username else f"ID {user.telegram_id}"
+        )
+
+        await message.answer(
+            f"🏆 <b>Winner:</b> {winner_name}\n🎫 Ticket #{winner.id}\n\n"
+            f"🎉 Congratulations to our lucky winner!"
+        )
+
+        # ✅ Reset tickets after winner is picked
+        await s.execute("DELETE FROM raffle_entries;")
+        await s.commit()
+        await message.answer("🔁 All tickets have been reset for the next round!")
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """Admin-only: show summary statistics."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Only the admin can view stats.")
+        return
+
+    async with async_session() as s:
+        total_users = await s.scalar(select(func.count(User.id)))
+        total_tickets = await s.scalar(select(func.count(RaffleEntry.id)))
+        total_free = await s.scalar(
+            select(func.count(RaffleEntry.id)).where(RaffleEntry.free_ticket == True)
+        )
+
+    await message.answer(
+        "📊 <b>Platform Stats</b>\n"
+        f"👥 Total Users: {total_users or 0}\n"
+        f"🎟 Total Tickets: {total_tickets or 0}\n"
+        f"🆓 Free Tickets: {total_free or 0}"
+    )
+
+
 @dp.message(Command("ticket"))
 async def cmd_ticket(message: Message):
     tg_id = message.from_user.id
@@ -179,17 +234,24 @@ async def cmd_ticket(message: Message):
         q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
         tickets = q2.scalars().all()
         if not tickets:
-            await message.answer("🚫 You have no tickets yet. Use /buy to get one.")
+            await message.answer("🚫 You have no tickets yet. Use /buy.")
             return
 
+        # 🔹 Format all tickets neatly
         parts = []
-        for t in tickets:
-            kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
+        for i, t in enumerate(tickets, start=1):
+            kind = "🆓 Free" if getattr(t, "free_ticket", False) else "💰 Paid"
             when = getattr(t, "created_at", None)
             when_txt = when.strftime("%Y-%m-%d %H:%M") if when else "-"
-            parts.append(f"🎫 #{t.id} | {kind} | {when_txt}")
+            parts.append(f"{i}. 🎟 Ticket #{t.id} | {kind} | {when_txt}")
 
-        await message.answer("\n".join(parts))
+        msg = (
+            f"🎫 <b>Your Tickets ({len(tickets)} total)</b>\n\n"
+            + "\n".join(parts)
+            + "\n\nGood luck 🍀 — draw happens soon!"
+        )
+
+        await message.answer(msg)
 
 
 @dp.message(Command("referrals"))
