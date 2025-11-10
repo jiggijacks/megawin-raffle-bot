@@ -213,16 +213,21 @@ async def cmd_stats(message: Message):
             select(func.count(RaffleEntry.id)).where(RaffleEntry.free_ticket == True)
         )
 
+        paid_tickets = (total_tickets or 0) - (total_free or 0)
+        total_value = paid_tickets * 500  # ₦500 per paid ticket
+
     await message.answer(
         "📊 <b>Platform Stats</b>\n"
         f"👥 Total Users: {total_users or 0}\n"
         f"🎟 Total Tickets: {total_tickets or 0}\n"
-        f"🆓 Free Tickets: {total_free or 0}"
+        f"🆓 Free Tickets: {total_free or 0}\n"
+        f"💰 Ticket Value (₦500 each): ₦{total_value:,.0f}"
     )
 
 
 @dp.message(Command("ticket"))
 async def cmd_ticket(message: Message):
+    """Show user's tickets and total count/value."""
     tg_id = message.from_user.id
     async with async_session() as s:
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
@@ -237,21 +242,26 @@ async def cmd_ticket(message: Message):
             await message.answer("🚫 You have no tickets yet. Use /buy.")
             return
 
-        # 🔹 Format all tickets neatly
-        parts = []
-        for i, t in enumerate(tickets, start=1):
-            kind = "🆓 Free" if getattr(t, "free_ticket", False) else "💰 Paid"
-            when = getattr(t, "created_at", None)
-            when_txt = when.strftime("%Y-%m-%d %H:%M") if when else "-"
-            parts.append(f"{i}. 🎟 Ticket #{t.id} | {kind} | {when_txt}")
+        msg_lines = []
+        total_free = 0
+        for t in tickets:
+            kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
+            if kind == "Free":
+                total_free += 1
+            created = getattr(t, "created_at", None)
+            when = created.strftime("%Y-%m-%d %H:%M") if created else "-"
+            msg_lines.append(f"🎫 #{t.id} | {kind} | {when}")
 
-        msg = (
-            f"🎫 <b>Your Tickets ({len(tickets)} total)</b>\n\n"
-            + "\n".join(parts)
-            + "\n\nGood luck 🍀 — draw happens soon!"
-        )
+        total_tickets = len(tickets)
+        paid_tickets = total_tickets - total_free
+        total_value = paid_tickets * 500  # ₦500 per paid ticket
 
-        await message.answer(msg)
+        msg_lines.append("\n📍 <b>Summary</b>")
+        msg_lines.append(f"🎟 Total Tickets: {total_tickets}")
+        msg_lines.append(f"💰 Value: ₦{total_value:,.0f}")
+
+        await message.answer("\n".join(msg_lines))
+
 
 
 @dp.message(Command("referrals"))
