@@ -54,6 +54,59 @@ dp = Dispatcher()
 app = FastAPI()
 
 # ---------------------------------------------------------
+# PROMO MANAGER (with auto-expiration)
+# ---------------------------------------------------------
+import asyncio
+from datetime import datetime, timedelta
+
+class PromoManager:
+    def __init__(self):
+        self.active = False
+        self.multiplier = 1
+        self.expires_at = None
+        self._task = None
+
+    def status(self):
+        if not self.active:
+            return "❌ No active promo."
+        remaining = (self.expires_at - datetime.utcnow()).total_seconds() if self.expires_at else 0
+        hours_left = int(remaining // 3600)
+        return f"🔥 Promo Active (x{self.multiplier}) | Expires in ~{hours_left}h"
+
+    async def start(self, multiplier: int, duration_hours: int = 24):
+        """Start promo for a set duration (default 24h)."""
+        self.active = True
+        self.multiplier = multiplier
+        self.expires_at = datetime.utcnow() + timedelta(hours=duration_hours)
+
+        # Cancel any existing expiration task
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+        self._task = asyncio.create_task(self._auto_expire())
+
+    async def _auto_expire(self):
+        """Automatically stop promo after duration."""
+        try:
+            await asyncio.sleep((self.expires_at - datetime.utcnow()).total_seconds())
+            self.stop()
+            logger.info("🕒 Promo period expired automatically.")
+        except asyncio.CancelledError:
+            pass
+
+    def stop(self):
+        """Manually stop promo."""
+        self.active = False
+        self.multiplier = 1
+        self.expires_at = None
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+# Initialize promo system
+promo = PromoManager()
+
+
+# ---------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------
 async def get_or_create_user(telegram_id: int, username: str | None = None):
@@ -159,6 +212,8 @@ async def cmd_help(message: Message):
         "• /help — Show this help guide\n\n"
         "<b>Admin Only:</b>\n"
         "• /winners — Pick random winner and reset\n"
+        "• /promo — Manage promo events\n"
+        "• /transactions — View recent transactions\n"
         "• /stats — Platform-wide analytics"
     )
 
@@ -349,7 +404,100 @@ async def cmd_balance(message: Message):
                 f"📊 <b>Net Balance:</b> ₦{balance:,}"
             )
 
+@dp.message(Command("promo"))
+async def cmd_promo(message: Message):
+    """Admin-only: manage timed promo events with broadcast."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Only admin can manage promo events.")
+        return
 
+    parts = message.text.split()
+    if len(parts) == 1:
+        await message.answer(f"📢 Current Promo: {promo.status()}")
+        return
+
+    action = parts[1].lower()
+    if action == "start" and len(parts) >= 3:
+        try:
+            multiplier = int(parts[2])
+            hours = int(parts[3]) if len(parts) > 3 else 24
+            if multiplier < 1 or hours < 1:
+                raise ValueError
+
+            # ✅ Start the promo
+            await promo.start(multiplier, hours)
+
+            # ✅ Broadcast message to all users
+            promo_text = (
+                f"🔥 <b>Double Ticket Promo is LIVE!</b>\n\n"
+                f"Earn <b>x{multiplier}</b> tickets for every payment made in the next {hours} hour(s)! 🕒\n\n"
+                f"Use /buy to grab your ticket now! 🎟"
+            )
+
+            # First notify admin
+            await message.answer("✅ Promo started and broadcast sent to all users.")
+            # Then send the message to everyone
+            await broadcast_message(promo_text)
+
+        except ValueError:
+            await message.answer(
+                "⚠️ Usage: /promo start <multiplier> [hours] (e.g. /promo start 2 12)"
+            )
+
+    elif action == "stop":
+        promo.stop()
+        await message.answer("🛑 Promo stopped manually.")
+
+    else:
+        await message.answer("⚠️ Usage:\n/promo start <multiplier> [hours]\n/promo stop")
+
+
+async def broadcast_message(text: str):
+    """Send message to all registered users."""
+    async with async_session() as s:
+        q = await s.execute(select(User.telegram_id))
+        user_ids = [u[0] for u in q.all() if u[0] != ADMIN_ID]
+
+    sent, failed = 0, 0
+    for uid in user_ids:
+        try:
+            await bot.send_message(uid, text)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Failed to send to {uid}: {e}")
+
+    logger.info(f"📢 Broadcast done — Sent: {sent}, Failed: {failed}")
+
+
+
+@dp.message(Command("transactions"))
+async def cmd_transactions(message: Message):
+    """Admin-only: show recent Paystack transaction summaries."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Only admin can view transactions.")
+        return
+
+    async with async_session() as s:
+        q = await s.execute(select(RaffleEntry).order_by(RaffleEntry.created_at.desc()).limit(10))
+        txs = q.scalars().all()
+
+    if not txs:
+        await message.answer("📭 No transactions yet.")
+        return
+
+    lines = []
+    for t in txs:
+        status = "✅ Verified" if t.payment_ref else "🕒 Pending"
+        kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
+        when = getattr(t, "created_at", None)
+        time_str = when.strftime("%Y-%m-%d %H:%M") if when else "-"
+        lines.append(f"{status} | {kind} | Ref: {t.payment_ref or '-'} | ⏰ {time_str}")
+
+    await message.answer(
+        "💳 <b>Last 10 Transactions</b>\n\n" + "\n".join(lines)
+    )
 
 
 @dp.message(Command("referrals"))
@@ -438,9 +586,12 @@ async def paystack_webhook(request: Request):
         q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
         entry = q.scalar_one_or_none()
         if not entry:
-            entry = RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False)
-            db.add(entry)
-        await db.commit()
+            # Apply promo multiplier
+            count = promo.multiplier if promo.active else 1
+            for _ in range(count):
+                entry = RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False)
+                db.add(entry)
+            await db.commit()
 
     try:
         await bot.send_message(
