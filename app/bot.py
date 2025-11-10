@@ -106,11 +106,12 @@ async def cmd_start(message: Message, command: Command):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
-        [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
-        [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
-        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
-    ])
+    [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+    [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
+    [InlineKeyboardButton(text="💰 My Balance", callback_data="my_balance")],
+    [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+])
+
 
     await message.answer(
         f"{bot_intro}\n\n🔗 Your referral link:\n<code>{ref_link}</code>",
@@ -336,6 +337,11 @@ async def cb_ref(callback: CallbackQuery):
 @dp.callback_query(F.data == "help_cmd")
 async def cb_help(callback: CallbackQuery):
     await cmd_help(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_balance")
+async def cb_balance(callback: CallbackQuery):
+    await cmd_balance(callback.message)
     await callback.answer()
 
 # ---------------------------------------------------------
