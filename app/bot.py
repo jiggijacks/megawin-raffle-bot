@@ -6,7 +6,7 @@ import aiohttp
 import uvicorn
 
 from fastapi import FastAPI, Request, HTTPException, Response
-
+from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -166,6 +166,49 @@ async def cmd_buy(message: Message):
     else:
         await message.answer("❌ Could not start Paystack payment. Try again.")
 
+@dp.message(Command("ticket"))
+async def cmd_ticket(message: Message):
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await message.answer("🚫 You don't have any tickets yet.")
+            return
+
+        q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
+        tickets = q2.scalars().all()
+        if not tickets:
+            await message.answer("🚫 You have no tickets yet. Use /buy to get one.")
+            return
+
+        parts = []
+        for t in tickets:
+            kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
+            when = getattr(t, "created_at", None)
+            when_txt = when.strftime("%Y-%m-%d %H:%M") if when else "-"
+            parts.append(f"🎫 #{t.id} | {kind} | {when_txt}")
+
+        await message.answer("\n".join(parts))
+
+
+@dp.message(Command("referrals"))
+async def cmd_referrals(message: Message):
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        count = getattr(user, "referral_count", 0) if user else 0
+
+        me = await bot.get_me()
+        ref_link = f"https://t.me/{me.username}?start={tg_id}"
+
+        await message.answer(
+            f"👥 You’ve referred <b>{count}</b> user(s).\n\n"
+            f"Your referral link:\n<code>{ref_link}</code>"
+        )
+
+
 # ---------------------------------------------------------
 # CALLBACKS
 # ---------------------------------------------------------
@@ -243,6 +286,55 @@ async def paystack_webhook(request: Request):
         logger.warning(f"Failed to notify user {tg_id}: {e}")
 
     return {"status": "ok"}
+
+from fastapi.responses import HTMLResponse
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/webhook/paystack")
+async def paystack_redirect():
+    """Handles Paystack redirect after payment (bank transfer or card)."""
+    telegram_bot_link = "https://t.me/MegaWinRafflebot"  # 👈 change to your actual bot link, e.g. https://t.me/MegaWinRaffleBot
+
+    html_content = f"""
+    <html>
+    <head>
+        <meta http-equiv="refresh" content="3; url=https://t.me/MegaWinRafflebot" />
+        <style>
+            body {{
+                background-color: #fafafa;
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding-top: 10%;
+                color: #333;
+            }}
+            .card {{
+                display: inline-block;
+                padding: 30px;
+                border-radius: 15px;
+                background: white;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }}
+            h2 {{
+                color: #28a745;
+            }}
+            p {{
+                color: #555;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>✅ Payment Successful!</h2>
+            <p>You’ll be redirected to Telegram in a few seconds...</p>
+            <p>If not, <a href="https://t.me/MegaWinRafflebot">click here</a>.</p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
 
 # ---------------------------------------------------------
 # STARTUP / SHUTDOWN
