@@ -265,35 +265,35 @@ async def cmd_ticket(message: Message):
 
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
-    """Show user's total spend and referral earnings."""
-    tg_id = message.from_user.id
+    """Show how much a user has spent and earned from referrals."""
+    telegram_id = message.from_user.id
+
     async with async_session() as s:
-        q = await s.execute(select(User).where(User.telegram_id == tg_id))
-        user = q.scalar_one_or_none()
-        if not user:
-            await message.answer("🚫 You don't have any record yet.")
-            return
+        async with s.begin():
+            # Get user
+            q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
+            user = q.scalar_one_or_none()
+            if not user:
+                await message.answer("🚫 You don't have any transactions yet.")
+                return
 
-        q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
-        tickets = q2.scalars().all()
-        if not tickets:
-            await message.answer("🚫 You don't have any tickets yet.")
-            return
+            # Tickets bought (each ₦500)
+            q_tickets = await s.execute(select(RaffleEntry).filter_by(user_id=user.id))
+            tickets = q_tickets.scalars().all()
+            paid_tickets = [t for t in tickets if not t.free_ticket]
+            free_tickets = [t for t in tickets if t.free_ticket]
 
-        paid_tickets = [t for t in tickets if not getattr(t, "free_ticket", False)]
-        free_tickets = [t for t in tickets if getattr(t, "free_ticket", False)]
+            spent = len(paid_tickets) * 500
+            earned = len(free_tickets) * 500  # free tickets = referral rewards
+            balance = earned - spent
 
-        spent = len(paid_tickets) * 500  # ₦500 each
-        earned = len(free_tickets) * 500  # value of each free ticket
-        balance = earned - spent
+            await message.answer(
+                f"💰 <b>Your Balance Summary</b>\n\n"
+                f"🪙 Tickets Bought: {len(paid_tickets)} (₦{spent})\n"
+                f"🎁 Free Tickets Earned: {len(free_tickets)} (₦{earned})\n\n"
+                f"📊 <b>Net Balance:</b> ₦{balance}"
+            )
 
-        await message.answer(
-            "💳 <b>Your Balance Summary</b>\n\n"
-            f"🎟 Paid Tickets: {len(paid_tickets)} (₦{spent:,.0f})\n"
-            f"🆓 Free Tickets from Referrals: {len(free_tickets)} (₦{earned:,.0f})\n\n"
-            f"💰 <b>Net Balance:</b> ₦{balance:,.0f} "
-            f"{'profit 🎉' if balance > 0 else 'spent 😅' if balance < 0 else 'neutral ⚖️'}"
-        )
 
 
 @dp.message(Command("referrals"))
