@@ -150,15 +150,17 @@ async def cmd_start(message: Message, command: Command):
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
-        "💡 <b>How to play</b>\n"
+        "💡 <b>How to Play</b>\n"
         "• /buy — Buy a raffle ticket (₦500)\n"
-        "• /ticket — View your tickets\n"
-        "• /balance — View your balance summary\n"
-        "• /referrals — See your referral count\n\n"
-        "<b>Admin only</b>:\n"
-        "• /winners — pick a random winner\n"
-        "• /stats — view platform stats"
+        "• /ticket — View your tickets & balance\n"
+        "• /userstat — See your lifetime activity\n"
+        "• /balance — Check your spend & referral rewards\n"
+        "• /help — Show this message\n\n"
+        "<b>Admin Only:</b>\n"
+        "• /winners — Pick a random winner\n"
+        "• /stats — Platform-wide stats"
     )
+
 
 @dp.message(Command("buy"))
 async def cmd_buy(message: Message):
@@ -186,10 +188,8 @@ async def cmd_buy(message: Message):
         ref = res["data"]["reference"]
         pay_url = res["data"]["authorization_url"]
 
-        async with async_session() as s:
-            s.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
-            await s.commit()
-
+    
+            
         await message.answer(
             f"💳 <b>Payment</b>\nClick below to complete your payment:\n"
             f"👉 <a href='{pay_url}'>Pay ₦500 via Paystack</a>\n\n"
@@ -201,35 +201,58 @@ async def cmd_buy(message: Message):
 
 @dp.message(Command("winners"))
 async def cmd_winners(message: Message):
-    """Admin-only: pick a random winner and reset tickets."""
     if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only the admin can use this command.")
+        await message.answer("🚫 Only admin can run this command.")
         return
 
     async with async_session() as s:
         q = await s.execute(select(RaffleEntry))
         entries = q.scalars().all()
         if not entries:
-            await message.answer("📭 No raffle tickets yet.")
+            await message.answer("📭 No tickets yet.")
             return
 
         winner = random.choice(entries)
         q2 = await s.execute(select(User).where(User.id == winner.user_id))
         user = q2.scalar_one_or_none()
 
-        winner_name = (
-            f"@{user.username}" if user and user.username else f"ID {user.telegram_id}"
-        )
-
         await message.answer(
-            f"🏆 <b>Winner:</b> {winner_name}\n🎫 Ticket #{winner.id}\n\n"
-            f"🎉 Congratulations to our lucky winner!"
+            f"🏆 <b>Winner:</b> @{user.username or user.telegram_id}\n🎫 Ticket #{winner.id}"
         )
 
-        # ✅ Reset tickets after winner is picked
-        await s.execute("DELETE FROM raffle_entries;")
+        # Reset all tickets
+        await s.execute("DELETE FROM raffle_entries")
         await s.commit()
         await message.answer("🔁 All tickets have been reset for the next round!")
+
+@dp.message(Command("userstat"))
+async def cmd_userstat(message: Message):
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await message.answer("🚫 You don't have any record yet.")
+            return
+
+        q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
+        tickets = q2.scalars().all()
+
+        total_tickets = len(tickets)
+        free_tickets = sum(1 for t in tickets if t.free_ticket)
+        paid_tickets = total_tickets - free_tickets
+        total_spent = paid_tickets * 500
+        total_earned = free_tickets * 500
+        balance = total_earned - total_spent
+
+        await message.answer(
+            f"📊 <b>Your MegaWin Stats</b>\n\n"
+            f"🎟 Total Tickets: {total_tickets}\n"
+            f"💸 Total Spent: ₦{total_spent:,}\n"
+            f"🎁 Free Tickets Earned: {free_tickets}\n"
+            f"💰 Net Balance: ₦{abs(balance):,}\n"
+            f"🏆 Wins: Coming soon!"
+        )
 
 
 @dp.message(Command("stats"))
@@ -260,7 +283,7 @@ async def cmd_stats(message: Message):
 
 @dp.message(Command("ticket"))
 async def cmd_ticket(message: Message):
-    """Show user's tickets and total count/value."""
+    """Show user's tickets and summary with clean layout."""
     tg_id = message.from_user.id
     async with async_session() as s:
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
@@ -275,25 +298,20 @@ async def cmd_ticket(message: Message):
             await message.answer("🚫 You have no tickets yet. Use /buy.")
             return
 
-        msg_lines = []
-        total_free = 0
-        for t in tickets:
-            kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
-            if kind == "Free":
-                total_free += 1
-            created = getattr(t, "created_at", None)
-            when = created.strftime("%Y-%m-%d %H:%M") if created else "-"
-            msg_lines.append(f"🎫 #{t.id} | {kind} | {when}")
-
         total_tickets = len(tickets)
-        paid_tickets = total_tickets - total_free
-        total_value = paid_tickets * 500  # ₦500 per paid ticket
+        free_tickets = sum(1 for t in tickets if t.free_ticket)
+        paid_tickets = total_tickets - free_tickets
+        total_value = paid_tickets * 500
+        balance_value = free_tickets * 500 - paid_tickets * 500
+        balance_display = abs(balance_value)  # remove negative sign
 
-        msg_lines.append("\n📍 <b>Summary</b>")
-        msg_lines.append(f"🎟 Total Tickets: {total_tickets}")
-        msg_lines.append(f"💰 Value: ₦{total_value:,.0f}")
+        await message.answer(
+            f"🎟 <b>Your Ticket Summary</b>\n\n"
+            f"🎫 Available Tickets: {total_tickets}\n"
+            f"🎁 Free Tickets: {free_tickets}\n"
+            f"💰 Net Balance: ₦{balance_display:,}"
+        )
 
-        await message.answer("\n".join(msg_lines))
 
 @dp.message(Command("balance"))
 async def cmd_balance(message: Message):
