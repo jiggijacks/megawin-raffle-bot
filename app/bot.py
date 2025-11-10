@@ -87,12 +87,12 @@ async def set_bot_commands():
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
-    tg_id = message.from_user.id
+    telegram_id = message.from_user.id
     username = message.from_user.username
-    await get_or_create_user(tg_id, username)
+    user = await get_or_create_user(telegram_id, username)
 
     me = await bot.get_me()
-    ref_link = f"https://t.me/{me.username}?start={tg_id}"
+    ref_link = f"https://t.me/{me.username}?start={telegram_id}"
 
     # ✅ Improved welcome message
     bot_intro = (
@@ -298,19 +298,19 @@ async def cmd_balance(message: Message):
 
 @dp.message(Command("referrals"))
 async def cmd_referrals(message: Message):
-    tg_id = message.from_user.id
+    telegram_id = message.from_user.id
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start={telegram_id}"
+
     async with async_session() as s:
-        q = await s.execute(select(User).where(User.telegram_id == tg_id))
-        user = q.scalar_one_or_none()
-        count = getattr(user, "referral_count", 0) if user else 0
+        async with s.begin():
+            q = await s.execute(select(User).filter_by(telegram_id=telegram_id))
+            user = q.scalar_one_or_none()
+            count = user.referral_count if user else 0
+            await message.answer(
+                f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}"
+            )
 
-        me = await bot.get_me()
-        ref_link = f"https://t.me/{me.username}?start={tg_id}"
-
-        await message.answer(
-            f"👥 You’ve referred <b>{count}</b> user(s).\n\n"
-            f"Your referral link:\n<code>{ref_link}</code>"
-        )
 
 
 # ---------------------------------------------------------
