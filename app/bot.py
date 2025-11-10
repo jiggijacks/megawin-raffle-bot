@@ -79,8 +79,10 @@ async def set_bot_commands():
         BotCommand(command="buy", description="Buy a raffle ticket (₦500)"),
         BotCommand(command="ticket", description="View your tickets"),
         BotCommand(command="referrals", description="Your referral count"),
+        BotCommand(command="balance", description="Check your spend & referral earnings")  # ✅ NEW
     ]
     await bot.set_my_commands(cmds)
+
 
 # ---------------------------------------------------------
 # COMMAND HANDLERS
