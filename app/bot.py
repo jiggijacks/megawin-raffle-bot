@@ -630,29 +630,54 @@ async def cmd_leaderboard(message: Message):
 
         await message.answer("\n".join(msg_lines))
 
-from fastapi import BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks
 import time
+from aiogram import Bot
+import logging
+
+# Assuming 'bot' is your instance of aiogram Bot and 'ADMIN_ID' is the admin user ID
+bot = Bot(token="YOUR_BOT_TOKEN")
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI()
 
 async def send_countdown():
     """Send a countdown message to remind users of the upcoming draw."""
-    # Adjust the message based on the time left till the next draw
-    draw_date = "2025-12-31"  # example date
+    draw_date = "2025-12-31"  # Example date
     current_time = time.time()
     draw_time = time.mktime(time.strptime(draw_date, "%Y-%m-%d"))
     time_left = int(draw_time - current_time)
 
     if time_left > 0:
+        # Send the message to the admin about the countdown
         await bot.send_message(
             chat_id=ADMIN_ID,
             text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
         )
 
-@app.on_event("startup")
-async def send_scheduled_message(background_tasks: BackgroundTasks):
-    """Start the countdown in the background."""
-    background_tasks.add_task(send_countdown)
 
+# Using lifespan to handle app startup and shutdown events
+@app.lifespan
+async def lifespan(app: FastAPI):
+    """Manage app startup and shutdown."""
+    # Startup logic
+    logger.info("🚀 App startup!")
 
+    # If you need to do something on startup like setting webhooks, etc.
+    await set_bot_commands()  # Assuming you have this function for setting commands
+
+    # Start background task for countdown
+    # Make sure the background task is added here correctly
+    background_tasks = BackgroundTasks()  # Initialize background tasks
+    background_tasks.add_task(send_countdown)  # Schedule countdown task
+
+    yield  # This indicates that the app is now running
+
+    # Shutdown logic
+    logger.info("🛑 App shutting down...")
+
+# Your existing background task notifications
 async def notify_free_ticket(user_id: int):
     """Notify users when they earn a free ticket."""
     await bot.send_message(
@@ -673,6 +698,15 @@ async def notify_winner(user_id: int):
         user_id,
         "🏆 The winners of MegaWin draw have been announced! Check the leaderboard! 🎉"
     )
+
+# Use the BackgroundTasks in a specific endpoint if needed
+@app.get("/send-message")
+async def send_message(background_tasks: BackgroundTasks):
+    """Route to trigger sending a message."""
+    background_tasks.add_task(notify_free_ticket, 123456)  # Example user_id for testing
+    return {"message": "Scheduled message has been sent."}
+
+
 
 # You can use these functions in the related code sections, for example, when a user refers others or when a winner is drawn.
 
