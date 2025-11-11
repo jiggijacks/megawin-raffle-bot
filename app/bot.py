@@ -9,8 +9,8 @@ from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher
 from aiogram import exceptions
-from aiogram.exceptions import FloodWait
 from aiogram.enums import ParseMode
+from aiogram.utils.exceptions import FloodWait
 from aiogram.filters import Command, Text
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
@@ -22,7 +22,6 @@ from aiogram.types import (
     Update
 )
 from sqlalchemy import select, func
-from aiogram.utils.exceptions import FloodWait
 # your own DB utilities / models
 from app.database import async_session, init_db, User, RaffleEntry
 
@@ -640,9 +639,17 @@ from fastapi import BackgroundTasks
 # Schedule a simple countdown background task and provide message endpoints
 # while avoiding redefinition of BOT_TOKEN, bot, logger or app.
 
+from fastapi import FastAPI, BackgroundTasks
+import logging
+
+# Initialize the app and logger
+app = FastAPI()
+logger = logging.getLogger(__name__)
+
+# Assuming send_countdown is defined somewhere else
 async def send_countdown():
     """Send a countdown message to remind users of the upcoming draw."""
-    draw_date = "2025-12-31"  # example date
+    draw_date = "2025-12-31"  # Example date
     current_time = time.time()
     draw_time = time.mktime(time.strptime(draw_date, "%Y-%m-%d"))
     time_left = int(draw_time - current_time)
@@ -656,10 +663,29 @@ async def send_countdown():
         except Exception as e:
             logger.warning(f"Failed to send countdown to admin: {e}")
 
-@app.on_event("startup")
-async def schedule_countdown(background_tasks: BackgroundTasks):
-    """Start the countdown in the background."""
-    background_tasks.add_task(send_countdown)
+# Define lifespan event
+async def lifespan(app: FastAPI):
+    """Handle app startup and shutdown."""
+    # On startup
+    logger.info("🚀 App startup!")
+    await init_db()  # Your existing initialization logic
+    await set_bot_commands()  # Set bot commands if necessary
+
+    # Start the countdown in the background
+    background_tasks = BackgroundTasks()
+    background_tasks.add_task(send_countdown)  # Add the task to run in the background
+
+    yield  # This keeps the app running
+
+    # On shutdown
+    logger.info("🛑 App shutdown...")
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"❌ Failed to delete webhook: {e}")
+
+# Set the lifespan for the FastAPI app
+app = FastAPI(lifespan=lifespan)
 
 
 # Your existing background task notifications (reuse same bot)
@@ -889,22 +915,21 @@ async def paystack_redirect():
 # STARTUP / SHUTDOWN
 # ---------------------------------------------------------
 from fastapi import FastAPI
+import asyncio
 import logging
 
-app = FastAPI()
+# Use FastAPI's lifespan event handler
+app = FastAPI(lifespan=lifespan)
 
-# Set up logging
-logger = logging.getLogger(__name__)
-
-# Startup event
-@app.on_event("startup")
-async def on_startup():
-    """Code to run when the app starts"""
+async def lifespan(app: FastAPI):
+    """Manage startup and shutdown."""
+    # Startup logic
     logger.info("🚀 App startup!")
-    await init_db()  # Initialize your database
-    await set_bot_commands()  # Set bot commands
+
+    await init_db()
+    await set_bot_commands()
+
     try:
-        # Set up the webhook for Telegram bot
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}",
                               allowed_updates=["message", "callback_query"])
@@ -912,16 +937,15 @@ async def on_startup():
     except Exception as e:
         logger.error(f"❌ Failed to set webhook: {e}")
 
-# Shutdown event
-@app.on_event("shutdown")
-async def on_shutdown():
-    """Code to run when the app shuts down"""
+    yield  # Keeps the app running
+
+    # Shutdown logic
     logger.info("🛑 App shutdown...")
     try:
-        # Remove the webhook when the app shuts down
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
         logger.error(f"❌ Failed to delete webhook: {e}")
+
 
 
 # ---------------------------------------------------------
