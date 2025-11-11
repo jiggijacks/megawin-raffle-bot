@@ -646,19 +646,26 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI()
 
+from fastapi import BackgroundTasks
+import time
+
 async def send_countdown():
     """Send a countdown message to remind users of the upcoming draw."""
-    draw_date = "2025-12-31"  # Example date
+    draw_date = "2025-12-31"  # example date
     current_time = time.time()
     draw_time = time.mktime(time.strptime(draw_date, "%Y-%m-%d"))
     time_left = int(draw_time - current_time)
 
     if time_left > 0:
-        # Send the message to the admin about the countdown
         await bot.send_message(
             chat_id=ADMIN_ID,
             text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
         )
+
+@app.on_event("startup")
+async def send_scheduled_message(background_tasks: BackgroundTasks):
+    """Start the countdown in the background."""
+    background_tasks.add_task(send_countdown)
 
 
 # Using lifespan to handle app startup and shutdown events
