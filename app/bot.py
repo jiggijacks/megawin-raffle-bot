@@ -668,25 +668,43 @@ async def send_scheduled_message(background_tasks: BackgroundTasks):
     background_tasks.add_task(send_countdown)
 
 
-# Using lifespan to handle app startup and shutdown events
-@app.lifespan
-async def lifespan(app: FastAPI):
-    """Manage app startup and shutdown."""
-    # Startup logic
-    logger.info("🚀 App startup!")
+# FastAPI setup and Bot initialization
+from fastapi import FastAPI, BackgroundTasks
+import time
+from aiogram import Bot
+import logging
 
-    # If you need to do something on startup like setting webhooks, etc.
-    await set_bot_commands()  # Assuming you have this function for setting commands
+# Assuming 'bot' is your instance of aiogram Bot and 'ADMIN_ID' is the admin user ID
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN not set in environment!")
+bot = Bot(token=BOT_TOKEN)
 
-    # Start background task for countdown
-    # Make sure the background task is added here correctly
-    background_tasks = BackgroundTasks()  # Initialize background tasks
-    background_tasks.add_task(send_countdown)  # Schedule countdown task
+logger = logging.getLogger(__name__)
 
-    yield  # This indicates that the app is now running
+# Create FastAPI app
+app = FastAPI()
 
-    # Shutdown logic
-    logger.info("🛑 App shutting down...")
+@app.on_event("startup")
+async def on_startup():
+    await init_db()
+    await set_bot_commands()
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}", allowed_updates=["message", "callback_query"])
+        logger.info("✅ Telegram webhook set")
+    except Exception as e:
+        logger.error(f"❌ Failed to set webhook: {e}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception:
+        pass
+
+# Your other bot-related functions...
+
 
 # Your existing background task notifications
 async def notify_free_ticket(user_id: int):
