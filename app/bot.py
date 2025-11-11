@@ -636,7 +636,11 @@ from aiogram import Bot
 import logging
 
 # Assuming 'bot' is your instance of aiogram Bot and 'ADMIN_ID' is the admin user ID
-bot = Bot(token="YOUR_BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN not set in environment!")
+bot = Bot(token=BOT_TOKEN)
+
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
