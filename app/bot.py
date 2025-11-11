@@ -7,9 +7,11 @@ import uvicorn
 
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher
+from aiogram import exceptions
+from aiogram.exceptions import FloodWait
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import Command, Text
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
@@ -20,7 +22,7 @@ from aiogram.types import (
     Update
 )
 from sqlalchemy import select, func
-
+from aiogram.utils.exceptions import FloodWait
 # your own DB utilities / models
 from app.database import async_session, init_db, User, RaffleEntry
 
@@ -630,24 +632,13 @@ async def cmd_leaderboard(message: Message):
 
         await message.answer("\n".join(msg_lines))
 
-from fastapi import FastAPI, BackgroundTasks
 import time
-from aiogram import Bot
-import logging
-
-# Assuming 'bot' is your instance of aiogram Bot and 'ADMIN_ID' is the admin user ID
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN not set in environment!")
-bot = Bot(token=BOT_TOKEN)
-
-logger = logging.getLogger(__name__)
-
-# Create FastAPI app
-app = FastAPI()
-
+from aiogram.utils.exceptions import FloodWait
 from fastapi import BackgroundTasks
-import time
+
+# Use the existing 'bot' and 'app' instances defined earlier in the file.
+# Schedule a simple countdown background task and provide message endpoints
+# while avoiding redefinition of BOT_TOKEN, bot, logger or app.
 
 async def send_countdown():
     """Send a countdown message to remind users of the upcoming draw."""
@@ -657,56 +648,21 @@ async def send_countdown():
     time_left = int(draw_time - current_time)
 
     if time_left > 0:
-        await bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
-        )
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send countdown to admin: {e}")
 
 @app.on_event("startup")
-async def send_scheduled_message(background_tasks: BackgroundTasks):
+async def schedule_countdown(background_tasks: BackgroundTasks):
     """Start the countdown in the background."""
     background_tasks.add_task(send_countdown)
 
 
-# FastAPI setup and Bot initialization
-from fastapi import FastAPI, BackgroundTasks
-import time
-from aiogram import Bot
-import logging
-
-# Assuming 'bot' is your instance of aiogram Bot and 'ADMIN_ID' is the admin user ID
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN not set in environment!")
-bot = Bot(token=BOT_TOKEN)
-
-logger = logging.getLogger(__name__)
-
-# Create FastAPI app
-app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    await init_db()
-    await set_bot_commands()
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}", allowed_updates=["message", "callback_query"])
-        logger.info("✅ Telegram webhook set")
-    except Exception as e:
-        logger.error(f"❌ Failed to set webhook: {e}")
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception:
-        pass
-
-# Your other bot-related functions...
-
-
-# Your existing background task notifications
+# Your existing background task notifications (reuse same bot)
 async def notify_free_ticket(user_id: int):
     """Notify users when they earn a free ticket."""
     await bot.send_message(
@@ -782,10 +738,11 @@ async def telegram_webhook(request: Request):
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
-        import time
-from aiogram.utils.exceptions import FloodWait
 
 async def set_webhook_with_retry():
+    """Attempt to set the telegram webhook with retries on FloodWait."""
+    from aiogram.utils.exceptions import FloodWait
+
     retries = 5
     for i in range(retries):
         try:
@@ -794,7 +751,7 @@ async def set_webhook_with_retry():
             break
         except FloodWait as e:
             logger.warning(f"⏳ Flood control exceeded. Retrying in {e.retry_after} seconds...")
-            time.sleep(e.retry_after)
+            await asyncio.sleep(e.retry_after)
         except Exception as e:
             logger.error(f"❌ Failed to set webhook: {e}")
             break
@@ -806,106 +763,113 @@ async def set_webhook_with_retry():
 @app.post(PAYSTACK_WEBHOOK_PATH)
 async def paystack_webhook(request: Request):
     """Handle Paystack webhook and add confirmed tickets."""
-    payload = await request.json()
-    event = payload.get("event")
-    data = payload.get("data", {})
-    logger.info(f"📩 Paystack event: {event}")
-
-    # Only handle successful payments
-    if event != "charge.success" or data.get("status") != "success":
-        return {"status": "ignored"}
-
-    tg_id = data.get("metadata", {}).get("telegram_id")
-    ref = data.get("reference")
-
-    if not tg_id or not ref:
-        return {"status": "error", "message": "Missing telegram_id or reference"}
-
-    async with async_session() as db:
-        uq = await db.execute(select(User).where(User.telegram_id == tg_id))
-        user = uq.scalar_one_or_none()
-        if not user:
-            user = User(telegram_id=tg_id)
-            db.add(user)
-            await db.flush()
-
-        # Prevent duplicate tickets for same reference
-        q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
-        entry = q.scalar_one_or_none()
-
-        if not entry:
-            # ✅ Apply promo multiplier (if active)
-            ticket_count = promo.multiplier if promo.active else 1
-            for _ in range(ticket_count):
-                db.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
-
-            # ✅ Affiliate commission reward
-            if getattr(user, "affiliate_id", None):
-                q_aff = await db.execute(select(User).where(User.id == user.affiliate_id))
-                affiliate = q_aff.scalar_one_or_none()
-                if affiliate:
-                    affiliate.commission_balance = (affiliate.commission_balance or 0) + 50  # ₦50 commission
-                    db.add(affiliate)
-                    try:
-                        await bot.send_message(
-                            affiliate.telegram_id,
-                            f"💸 You earned ₦50 commission from your affiliate link! 💰"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to notify affiliate: {e}")
-
-            await db.commit()
-
-    # ✅ Notify the buyer
     try:
-        await bot.send_message(
-            chat_id=int(tg_id),
-            text=(
-                f"✅ <b>Payment confirmed!</b>\n"
-                f"🎟 You received <b>{ticket_count}</b> ticket{'s' if ticket_count > 1 else ''} "
-                f"for your payment.\nUse /ticket to view your tickets."
-            ),
-        )
+        payload = await request.json()
+        event = payload.get("event")
+        data = payload.get("data", {})
+        logger.info(f"📩 Paystack event: {event}")
+
+        # Only handle successful payments
+        if event != "charge.success" or data.get("status") != "success":
+            return {"status": "ignored"}
+
+        tg_id = data.get("metadata", {}).get("telegram_id")
+        ref = data.get("reference")
+
+        if not tg_id or not ref:
+            return {"status": "error", "message": "Missing telegram_id or reference"}
+
+        # Ensure tg_id is int when used for DB queries / messaging
+        try:
+            tg_id_int = int(tg_id)
+        except Exception:
+            tg_id_int = tg_id
+
+        ticket_count = 0
+        async with async_session() as db:
+            # find user
+            uq = await db.execute(select(User).where(User.telegram_id == tg_id_int))
+            user = uq.scalar_one_or_none()
+            if not user:
+                logger.warning(f"User with telegram_id {tg_id} not found for payment {ref}")
+                return {"status": "error", "message": "User not found"}
+
+            q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
+            entry = q.scalar_one_or_none()
+
+            if not entry:
+                # Apply promo multiplier (if active)
+                ticket_count = promo.multiplier if promo.active else 1
+                for _ in range(ticket_count):
+                    db.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
+
+                # Affiliate commission reward
+                if getattr(user, "affiliate_id", None):
+                    q_aff = await db.execute(select(User).where(User.id == user.affiliate_id))
+                    affiliate = q_aff.scalar_one_or_none()
+                    if affiliate:
+                        affiliate.commission_balance = (affiliate.commission_balance or 0) + 50  # ₦50 commission
+                        db.add(affiliate)
+                        try:
+                            await bot.send_message(
+                                affiliate.telegram_id,
+                                f"💸 You earned ₦50 commission from your affiliate link! 💰"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to notify affiliate: {e}")
+
+                await db.commit()
+
+        # Notify the buyer
+        try:
+            await bot.send_message(
+                chat_id=int(tg_id_int),
+                text=(
+                    f"✅ <b>Payment confirmed!</b>\n"
+                    f"🎟 You received <b>{ticket_count}</b> ticket{'s' if ticket_count > 1 else ''} "
+                    f"for your payment.\nUse /ticket to view your tickets."
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify user {tg_id}: {e}")
+
+        return {"status": "ok"}
+
     except Exception as e:
-        logger.warning(f"Failed to notify user {tg_id}: {e}")
+        logger.error(f"❌ Paystack webhook processing error: {e}")
+        return {"status": "error", "message": str(e)}
 
-    return {"status": "ok"}
-
-
-from fastapi.responses import HTMLResponse
-
-from fastapi.responses import HTMLResponse
 
 @app.get("/webhook/paystack")
 async def paystack_redirect():
     """Handles Paystack redirect after payment (bank transfer or card)."""
     telegram_bot_link = "https://t.me/MegaWinRafflebot"  # 👈 change to your actual bot link, e.g. https://t.me/MegaWinRaffleBot
 
-    html_content = f"""
+    html_content = """
     <html>
     <head>
         <meta http-equiv="refresh" content="3; url=https://t.me/MegaWinRafflebot" />
         <style>
-            body {{
+            body {
                 background-color: #fafafa;
                 font-family: Arial, sans-serif;
                 text-align: center;
                 padding-top: 10%;
                 color: #333;
-            }}
-            .card {{
+            }
+            .card {
                 display: inline-block;
                 padding: 30px;
                 border-radius: 15px;
                 background: white;
                 box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            }}
-            h2 {{
+            }
+            h2 {
                 color: #28a745;
-            }}
-            p {{
+            }
+            p {
                 color: #555;
-            }}
+            }
         </style>
     </head>
     <body>
@@ -924,24 +888,41 @@ async def paystack_redirect():
 # ---------------------------------------------------------
 # STARTUP / SHUTDOWN
 # ---------------------------------------------------------
+from fastapi import FastAPI
+import logging
+
+app = FastAPI()
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+# Startup event
 @app.on_event("startup")
 async def on_startup():
-    await init_db()
-    await set_bot_commands()
+    """Code to run when the app starts"""
+    logger.info("🚀 App startup!")
+    await init_db()  # Initialize your database
+    await set_bot_commands()  # Set bot commands
     try:
+        # Set up the webhook for Telegram bot
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}",
                               allowed_updates=["message", "callback_query"])
-        logger.info("✅ Telegram webhook set")
+        logger.info("✅ Telegram webhook set successfully.")
     except Exception as e:
         logger.error(f"❌ Failed to set webhook: {e}")
 
+# Shutdown event
 @app.on_event("shutdown")
 async def on_shutdown():
+    """Code to run when the app shuts down"""
+    logger.info("🛑 App shutdown...")
     try:
+        # Remove the webhook when the app shuts down
         await bot.delete_webhook(drop_pending_updates=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"❌ Failed to delete webhook: {e}")
+
 
 # ---------------------------------------------------------
 # ENTRY POINT
