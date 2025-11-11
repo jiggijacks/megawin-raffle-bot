@@ -142,73 +142,91 @@ async def set_bot_commands():
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
-    """Welcome message with referral link and action buttons."""
+    """Welcome message with referral + affiliate link logic."""
     tg_id = message.from_user.id
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
 
-    # Handle referral logic
-    args = (command.args or "").strip()
-    if args:
+    # Get any argument passed to /start
+    args = getattr(command, "args", None)
+    if not args:
         try:
-            ref_tg_id = int(args)
-            if ref_tg_id == tg_id:
-                await message.answer("⚠️ You can’t refer yourself.")
-                return
+            args = message.get_args()
+        except Exception:
+            args = None
 
+    if args:
+        # ✅ Step 1: Handle affiliate links first (e.g., aff123456)
+        if args.startswith("aff"):
+            affiliate_code = args.strip()
             async with async_session() as s:
-                q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
-                ref_user = q.scalar_one_or_none()
+                async with s.begin():
+                    q = await s.execute(select(User).where(User.affiliate_code == affiliate_code))
+                    affiliate = q.scalar_one_or_none()
+                    if affiliate:
+                        user.affiliate_id = affiliate.id
+                        s.add(user)
+                        await s.commit()
+                        await message.answer(
+                            f"🤝 You joined via affiliate link from <b>{affiliate.username or affiliate.telegram_id}</b>!"
+                        )
 
-                # Prevent multiple referral counts from same user
-                q2 = await s.execute(
-                    select(User).where(User.referred_by == ref_tg_id, User.telegram_id == tg_id)
-                )
-                already_referred = q2.scalar_one_or_none()
+        # ✅ Step 2: Handle normal referrals (numeric user IDs)
+        else:
+            try:
+                ref_tg_id = int(args)
+                if ref_tg_id == tg_id:
+                    await message.answer("⚠️ You can’t refer yourself.")
+                    return
 
-                if ref_user and not already_referred:
-                    user.referred_by = ref_tg_id
-                    ref_user.referral_count = (ref_user.referral_count or 0) + 1
-                    s.add_all([user, ref_user])
+                async with async_session() as s:
+                    async with s.begin():
+                        q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
+                        ref_user = q.scalar_one_or_none()
 
-                        if ref_user.referral_count >= 5:
-                            entry = RaffleEntry(user_id=ref_user.id, free_ticket=True)
-                            s.add(entry)
-                            ref_user.referral_count -= 5
-                            await s.commit()
-                            try:
+                        # Prevent multiple referral counts from same user
+                        q2 = await s.execute(
+                            select(User).where(User.referred_by == ref_tg_id, User.telegram_id == tg_id)
+                        )
+                        already_referred = q2.scalar_one_or_none()
+
+                        if ref_user and not already_referred:
+                            user.referred_by = ref_tg_id
+                            ref_user.referral_count = (ref_user.referral_count or 0) + 1
+                            s.add_all([user, ref_user])
+
+                            if ref_user.referral_count >= 5:
+                                ticket = RaffleEntry(user_id=ref_user.id, free_ticket=True)
+                                s.add(ticket)
+                                ref_user.referral_count -= 5
                                 await bot.send_message(
                                     ref_user.telegram_id,
-                                    "🎉 <b>You referred 5 users and earned a FREE ticket!</b>",
+                                    "🎉 You referred 5 users and earned a free ticket!"
                                 )
-                            except Exception as e:
-                                logger.warning(f"Failed to notify referrer: {e}")
-                        else:
+
                             await s.commit()
-        except ValueError:
-            pass
+            except ValueError:
+                pass  # Ignore invalid referral IDs
 
-    # Generate consistent referral link
-    me = await bot.get_me()
-    ref_link = f"https://t.me/{me.username}?start={tg_id}"
-
-    # Buttons (Referrals replaced with Balance)
+    # ✅ Step 3: Send welcome message and action buttons
+    ref_link = f"https://t.me/{(await bot.get_me()).username}?start={tg_id}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
         [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
-        [InlineKeyboardButton(text="💰 My Balance", callback_data="my_balance")],
+        [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
         [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
     ])
 
-    # Informative welcome message
     await message.answer(
         "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
-        "💰 Buy raffle tickets for ₦500 each and stand a chance to win amazing prizes!\n"
-        "👥 Invite friends using your referral link — 5 successful referrals earn you 1 free ticket!\n\n"
-        f"🔗 <b>Your Referral Link:</b>\n<code>{ref_link}</code>\n\n"
+        "💸 Buy tickets, earn rewards, and win big!\n"
+        "👥 Invite friends with your unique link:\n"
+        f"<code>{ref_link}</code>\n\n"
+        "🪙 You can also join our affiliate program with /affiliate\n\n"
         "Use the buttons below to get started 👇",
         reply_markup=kb,
     )
+
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -231,6 +249,7 @@ async def cmd_help(message: Message):
 
 @dp.message(Command("buy"))
 async def cmd_buy(message: Message):
+    """Initialize Paystack transaction and apply promo multiplier if active."""
     if not PAYSTACK_SECRET_KEY:
         await message.answer("❌ Paystack key not set.")
         return
@@ -238,33 +257,40 @@ async def cmd_buy(message: Message):
     tg_id = message.from_user.id
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
-    callback_url = f"{PUBLIC_URL}{PAYSTACK_WEBHOOK_PATH}"
+
+    callback_url = f"{PUBLIC_URL}{PAYSTACK_WEBHOOK_PATH}" if PUBLIC_URL else None
 
     async with aiohttp.ClientSession() as s:
-        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+                   "Content-Type": "application/json"}
         payload = {
             "email": f"user_{tg_id}@megawinraffle.com",
-            "amount": 500 * 100,
-            "metadata": {"telegram_id": tg_id},
+            "amount": 500 * 100,  # ₦500 in kobo
+            "metadata": {
+                "telegram_id": tg_id,
+                "promo_multiplier": promo.multiplier if promo.active else 1
+            },
             "callback_url": callback_url,
         }
-        async with s.post("https://api.paystack.co/transaction/initialize", headers=headers, json=payload) as resp:
+        async with s.post("https://api.paystack.co/transaction/initialize",
+                          headers=headers, json=payload) as resp:
             res = await resp.json()
 
     if res.get("status"):
         ref = res["data"]["reference"]
         pay_url = res["data"]["authorization_url"]
 
-    
-            
         await message.answer(
-            f"💳 <b>Payment</b>\nClick below to complete your payment:\n"
-            f"👉 <a href='{pay_url}'>Pay ₦500 via Paystack</a>\n\n"
-            f"Once payment is confirmed, your ticket will be added automatically. ✅",
+            f"💳 <b>Payment</b>\n\n"
+            f"Click below to complete your payment:\n"
+            f"👉 <a href=\"{pay_url}\">Pay ₦500 via Paystack</a>\n\n"
+            f"{'🔥 Promo Active! You’ll earn extra tickets for this payment.' if promo.active else ''}\n"
+            f"Once payment is confirmed, your raffle ticket(s) will be added automatically. ✅",
             disable_web_page_preview=True,
         )
     else:
-        await message.answer("❌ Could not start Paystack payment. Try again.")
+        await message.answer("❌ Could not start Paystack payment. Please try again.")
+
 
 @dp.message(Command("winners"))
 async def cmd_winners(message: Message):
@@ -484,30 +510,44 @@ async def broadcast_message(text: str):
 
 @dp.message(Command("transactions"))
 async def cmd_transactions(message: Message):
-    """Admin-only: show recent Paystack transaction summaries."""
+    """Admin-only: View all transactions, payments, and affiliate commissions."""
     if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only admin can view transactions.")
+        await message.answer("🚫 Only the admin can view transactions.")
         return
 
-    async with async_session() as s:
-        q = await s.execute(select(RaffleEntry).order_by(RaffleEntry.created_at.desc()).limit(10))
-        txs = q.scalars().all()
+    async with async_session() as db:
+        # Get all payments
+        q = await db.execute(select(RaffleEntry).order_by(RaffleEntry.created_at.desc()))
+        transactions = q.scalars().all()
 
-    if not txs:
-        await message.answer("📭 No transactions yet.")
-        return
+        if not transactions:
+            await message.answer("❌ No transactions found.")
+            return
 
-    lines = []
-    for t in txs:
-        status = "✅ Verified" if t.payment_ref else "🕒 Pending"
-        kind = "Free" if getattr(t, "free_ticket", False) else "Paid"
-        when = getattr(t, "created_at", None)
-        time_str = when.strftime("%Y-%m-%d %H:%M") if when else "-"
-        lines.append(f"{status} | {kind} | Ref: {t.payment_ref or '-'} | ⏰ {time_str}")
+        # Format transactions
+        msg_lines = ["💳 <b>Transactions</b>:\n"]
 
-    await message.answer(
-        "💳 <b>Last 10 Transactions</b>\n\n" + "\n".join(lines)
-    )
+        for entry in transactions:
+            user = await db.execute(select(User).where(User.id == entry.user_id))
+            user = user.scalar_one_or_none()
+            if user:
+                # Check for affiliate commission
+                affiliate_message = ""
+                if getattr(user, "affiliate_id", None):
+                    affiliate = await db.execute(select(User).where(User.id == user.affiliate_id))
+                    affiliate = affiliate.scalar_one_or_none()
+                    if affiliate:
+                        affiliate_message = f"💸 Commission Earned: ₦{affiliate.commission_balance or 0}"
+
+                msg_lines.append(
+                    f"🎟 Ticket #{entry.id} | User: @{user.username} | "
+                    f"Payment Reference: {entry.payment_ref} | "
+                    f"Status: {'Verified' if entry.payment_ref else 'Pending'}\n"
+                    f"{affiliate_message}"
+                )
+
+        await message.answer("\n".join(msg_lines))
+
 
 
 @dp.message(Command("referrals"))
@@ -525,6 +565,116 @@ async def cmd_referrals(message: Message):
                 f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}"
             )
 
+@dp.message(Command("affiliate"))
+async def cmd_affiliate(message: Message):
+    """Generate affiliate link and show commission balance."""
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        async with s.begin():
+            q = await s.execute(select(User).where(User.telegram_id == tg_id))
+            user = q.scalar_one_or_none()
+            if not user:
+                await message.answer("🚫 Please use /start first.")
+                return
+
+            # Generate affiliate code if missing
+            if not user.affiliate_code:
+                user.affiliate_code = f"aff{tg_id}"
+                s.add(user)
+                await s.commit()
+
+            code = user.affiliate_code
+            link = f"https://t.me/{(await bot.get_me()).username}?start={code}"
+            balance = getattr(user, "commission_balance", 0)
+
+            await message.answer(
+                f"💼 <b>Affiliate Dashboard</b>\n\n"
+                f"🔗 Your Link:\n<code>{link}</code>\n\n"
+                f"💰 Commission Balance: ₦{balance:,.0f}\n\n"
+                f"Earn ₦50 for each successful ticket sale through your link!"
+            )
+
+@dp.message(Command("leaderboard"))
+async def cmd_leaderboard(message: Message):
+    """Show the top 10 referrers and most active ticket buyers."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Only the admin can view the leaderboard.")
+        return
+
+    async with async_session() as db:
+        # Get the top 10 referrers
+        referrers = await db.execute(
+            select(User).order_by(User.referral_count.desc()).limit(10)
+        )
+        top_referrers = referrers.scalars().all()
+
+        # Get the most active ticket buyers (by the number of tickets purchased)
+        buyers = await db.execute(
+            select(User)
+            .join(RaffleEntry)
+            .group_by(User.id)
+            .order_by(func.count(RaffleEntry.id).desc())
+            .limit(10)
+        )
+        top_buyers = buyers.scalars().all()
+
+        # Format leaderboard message
+        msg_lines = ["🏆 <b>Leaderboard</b>\n"]
+        msg_lines.append("\n<b>Top 10 Referrers:</b>")
+        for i, referrer in enumerate(top_referrers, start=1):
+            msg_lines.append(f"{i}. @{referrer.username} - {referrer.referral_count} Referrals")
+
+        msg_lines.append("\n<b>Top 10 Active Ticket Buyers:</b>")
+        for i, buyer in enumerate(top_buyers, start=1):
+            msg_lines.append(f"{i}. @{buyer.username} - {buyer.ticket_count} Tickets")
+
+        await message.answer("\n".join(msg_lines))
+
+from fastapi import BackgroundTasks
+import time
+
+async def send_countdown():
+    """Send a countdown message to remind users of the upcoming draw."""
+    # Adjust the message based on the time left till the next draw
+    draw_date = "2025-12-31"  # example date
+    current_time = time.time()
+    draw_time = time.mktime(time.strptime(draw_date, "%Y-%m-%d"))
+    time_left = int(draw_time - current_time)
+
+    if time_left > 0:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
+        )
+
+@app.on_event("startup")
+async def send_scheduled_message(background_tasks: BackgroundTasks):
+    """Start the countdown in the background."""
+    background_tasks.add_task(send_countdown)
+
+
+async def notify_free_ticket(user_id: int):
+    """Notify users when they earn a free ticket."""
+    await bot.send_message(
+        user_id,
+        "🎟️ Congratulations! You've earned a free ticket for referring 5 people. 🎉"
+    )
+
+async def notify_draw_date_coming(user_id: int):
+    """Notify users when the draw date is near."""
+    await bot.send_message(
+        user_id,
+        "⏳ The MegaWin draw is just around the corner! Stay tuned. 📅"
+    )
+
+async def notify_winner(user_id: int):
+    """Notify users when winners are announced."""
+    await bot.send_message(
+        user_id,
+        "🏆 The winners of MegaWin draw have been announced! Check the leaderboard! 🎉"
+    )
+
+# You can use these functions in the related code sections, for example, when a user refers others or when a winner is drawn.
 
 
 # ---------------------------------------------------------
@@ -574,16 +724,21 @@ async def telegram_webhook(request: Request):
 # ---------------------------------------------------------
 @app.post(PAYSTACK_WEBHOOK_PATH)
 async def paystack_webhook(request: Request):
+    """Handle Paystack webhook and add confirmed tickets."""
     payload = await request.json()
     event = payload.get("event")
     data = payload.get("data", {})
     logger.info(f"📩 Paystack event: {event}")
 
-    if event != "charge.success":
+    # Only handle successful payments
+    if event != "charge.success" or data.get("status") != "success":
         return {"status": "ignored"}
 
     tg_id = data.get("metadata", {}).get("telegram_id")
     ref = data.get("reference")
+
+    if not tg_id or not ref:
+        return {"status": "error", "message": "Missing telegram_id or reference"}
 
     async with async_session() as db:
         uq = await db.execute(select(User).where(User.telegram_id == tg_id))
@@ -593,25 +748,48 @@ async def paystack_webhook(request: Request):
             db.add(user)
             await db.flush()
 
+        # Prevent duplicate tickets for same reference
         q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
         entry = q.scalar_one_or_none()
+
         if not entry:
-            # Apply promo multiplier
-            count = promo.multiplier if promo.active else 1
-            for _ in range(count):
-                entry = RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False)
-                db.add(entry)
+            # ✅ Apply promo multiplier (if active)
+            ticket_count = promo.multiplier if promo.active else 1
+            for _ in range(ticket_count):
+                db.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
+
+            # ✅ Affiliate commission reward
+            if getattr(user, "affiliate_id", None):
+                q_aff = await db.execute(select(User).where(User.id == user.affiliate_id))
+                affiliate = q_aff.scalar_one_or_none()
+                if affiliate:
+                    affiliate.commission_balance = (affiliate.commission_balance or 0) + 50  # ₦50 commission
+                    db.add(affiliate)
+                    try:
+                        await bot.send_message(
+                            affiliate.telegram_id,
+                            f"💸 You earned ₦50 commission from your affiliate link! 💰"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify affiliate: {e}")
+
             await db.commit()
 
+    # ✅ Notify the buyer
     try:
         await bot.send_message(
             chat_id=int(tg_id),
-            text="✅ Payment confirmed! Your raffle ticket has been added.\nUse /ticket to view it.",
+            text=(
+                f"✅ <b>Payment confirmed!</b>\n"
+                f"🎟 You received <b>{ticket_count}</b> ticket{'s' if ticket_count > 1 else ''} "
+                f"for your payment.\nUse /ticket to view your tickets."
+            ),
         )
     except Exception as e:
         logger.warning(f"Failed to notify user {tg_id}: {e}")
 
     return {"status": "ok"}
+
 
 from fastapi.responses import HTMLResponse
 

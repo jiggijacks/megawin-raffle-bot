@@ -25,6 +25,8 @@ class User(Base):
     referral_count = Column(Integer, default=0)
     referred_by = Column(Integer, ForeignKey("users.telegram_id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    affiliate_code = Column(String, unique=True, nullable=True)
+    commission_balance = Column(Integer, default=0)
 
     tickets = relationship("RaffleEntry", back_populates="user", cascade="all, delete-orphan")
 
