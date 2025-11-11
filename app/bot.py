@@ -152,14 +152,24 @@ async def cmd_start(message: Message, command: Command):
     if args:
         try:
             ref_tg_id = int(args)
-            if ref_tg_id != tg_id:
-                async with async_session() as s:
-                    q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
-                    ref_user = q.scalar_one_or_none()
-                    if ref_user:
-                        current = getattr(ref_user, "referral_count", 0) or 0
-                        ref_user.referral_count = current + 1
-                        s.add(ref_user)
+            if ref_tg_id == tg_id:
+                await message.answer("⚠️ You can’t refer yourself.")
+                return
+
+            async with async_session() as s:
+                q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
+                ref_user = q.scalar_one_or_none()
+
+                # Prevent multiple referral counts from same user
+                q2 = await s.execute(
+                    select(User).where(User.referred_by == ref_tg_id, User.telegram_id == tg_id)
+                )
+                already_referred = q2.scalar_one_or_none()
+
+                if ref_user and not already_referred:
+                    user.referred_by = ref_tg_id
+                    ref_user.referral_count = (ref_user.referral_count or 0) + 1
+                    s.add_all([user, ref_user])
 
                         if ref_user.referral_count >= 5:
                             entry = RaffleEntry(user_id=ref_user.id, free_ticket=True)
