@@ -782,6 +782,24 @@ async def telegram_webhook(request: Request):
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
+        import time
+from aiogram.utils.exceptions import FloodWait
+
+async def set_webhook_with_retry():
+    retries = 5
+    for i in range(retries):
+        try:
+            await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}")
+            logger.info("✅ Telegram webhook set")
+            break
+        except FloodWait as e:
+            logger.warning(f"⏳ Flood control exceeded. Retrying in {e.retry_after} seconds...")
+            time.sleep(e.retry_after)
+        except Exception as e:
+            logger.error(f"❌ Failed to set webhook: {e}")
+            break
+
+
 # ---------------------------------------------------------
 # PAYSTACK WEBHOOK
 # ---------------------------------------------------------
