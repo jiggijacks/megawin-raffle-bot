@@ -3,6 +3,11 @@ import logging
 import random
 import aiohttp
 import uvicorn
+import sys
+print(sys.path)
+from dotenv import load_dotenv
+load_dotenv()  # This loads the environment variables from the .env file
+
 # Support different aiogram versions for the FloodWait exception import,
 # and provide a lightweight fallback if neither import is available.
 try:
@@ -18,9 +23,9 @@ except Exception:
 
 from fastapi import FastAPI, Request, HTTPException, Response, BackgroundTasks
 from fastapi.responses import HTMLResponse
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, F
+from aiogram.filters import Command,F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
@@ -32,6 +37,12 @@ from aiogram.types import (
 )
 from sqlalchemy import select, func
 from app.database import async_session, init_db, User, RaffleEntry
+import os
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN not set in environment")
+else:
+    print("✅ BOT_TOKEN loaded successfully")
 
 # ---------------------------------------------------------
 # ENVIRONMENT
@@ -948,4 +959,6 @@ async def paystack_redirect():
 # ENTRY POINT
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    # Run Uvicorn by import string to avoid issues with objects created at import time
+    # (for example when using auto-reload or certain event-loop interactions).
+    uvicorn.run("app.bot:app", host="0.0.0.0", port=PORT, log_level="info")
