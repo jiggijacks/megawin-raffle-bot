@@ -1,17 +1,26 @@
-# app/bot.py
 import os
 import logging
 import random
 import aiohttp
 import uvicorn
+# Support different aiogram versions for the FloodWait exception import,
+# and provide a lightweight fallback if neither import is available.
+try:
+    from aiogram.exceptions import FloodWait
+except Exception:
+    try:
+        from aiogram.utils.exceptions import FloodWait
+    except Exception:
+        class FloodWait(Exception):
+            def __init__(self, retry_after: int = 0):
+                super().__init__("FloodWait")
+                self.retry_after = retry_after
 
-from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi import FastAPI, Request, HTTPException, Response, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher
-from aiogram import exceptions
 from aiogram.enums import ParseMode
-from aiogram.utils.exceptions import FloodWait
-from aiogram.filters import Command, Text
+from aiogram.filters import Command, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
@@ -22,7 +31,6 @@ from aiogram.types import (
     Update
 )
 from sqlalchemy import select, func
-# your own DB utilities / models
 from app.database import async_session, init_db, User, RaffleEntry
 
 # ---------------------------------------------------------
@@ -106,7 +114,6 @@ class PromoManager:
 # Initialize promo system
 promo = PromoManager()
 
-
 # ---------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------
@@ -125,7 +132,6 @@ async def get_or_create_user(telegram_id: int, username: str | None = None):
         await session.refresh(user)
         return user
 
-
 async def set_bot_commands():
     cmds = [
         BotCommand(command="start", description="Start / Referral link"),
@@ -137,18 +143,16 @@ async def set_bot_commands():
     ]
     await bot.set_my_commands(cmds)
 
-
 # ---------------------------------------------------------
 # COMMAND HANDLERS
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
-    """Welcome message with referral + affiliate link logic."""
     tg_id = message.from_user.id
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
 
-    # Get any argument passed to /start
+    # Handle affiliate and referrals
     args = getattr(command, "args", None)
     if not args:
         try:
@@ -157,7 +161,6 @@ async def cmd_start(message: Message, command: Command):
             args = None
 
     if args:
-        # ✅ Step 1: Handle affiliate links first (e.g., aff123456)
         if args.startswith("aff"):
             affiliate_code = args.strip()
             async with async_session() as s:
@@ -168,11 +171,8 @@ async def cmd_start(message: Message, command: Command):
                         user.affiliate_id = affiliate.id
                         s.add(user)
                         await s.commit()
-                        await message.answer(
-                            f"🤝 You joined via affiliate link from <b>{affiliate.username or affiliate.telegram_id}</b>!"
-                        )
+                        await message.answer(f"🤝 You joined via affiliate link from <b>{affiliate.username or affiliate.telegram_id}</b>!")
 
-        # ✅ Step 2: Handle normal referrals (numeric user IDs)
         else:
             try:
                 ref_tg_id = int(args)
@@ -185,7 +185,6 @@ async def cmd_start(message: Message, command: Command):
                         q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
                         ref_user = q.scalar_one_or_none()
 
-                        # Prevent multiple referral counts from same user
                         q2 = await s.execute(
                             select(User).where(User.referred_by == ref_tg_id, User.telegram_id == tg_id)
                         )
@@ -209,9 +208,8 @@ async def cmd_start(message: Message, command: Command):
             except ValueError:
                 pass  # Ignore invalid referral IDs
 
-    # ✅ Step 3: Send welcome message and action buttons
     ref_link = f"https://t.me/{(await bot.get_me()).username}?start={tg_id}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    kb = InlineKeyboardMarkup(inline_keyboard=[  # Build keyboard
         [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
         [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
         [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
@@ -227,6 +225,9 @@ async def cmd_start(message: Message, command: Command):
         "Use the buttons below to get started 👇",
         reply_markup=kb,
     )
+
+# Same structure for other command handlers and webhook handling...
+
 
 
 @dp.message(Command("help"))
@@ -631,61 +632,68 @@ async def cmd_leaderboard(message: Message):
 
         await message.answer("\n".join(msg_lines))
 
-import time
-from aiogram.utils.exceptions import FloodWait
-from fastapi import BackgroundTasks
+# ---------------------------------------------------------
+# Error Handling for Flood Control (v3.x)
+# ---------------------------------------------------------
+async def handle_flood_error():
+    """Handle flood control errors and retry."""
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
+    except Exception as e:
+        retry_after = getattr(e, "retry_after", None)
+        if retry_after:
+            logger.warning(f"Rate limit exceeded, retrying in {retry_after}s")
+            await asyncio.sleep(retry_after)
+            try:
+                await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
+            except Exception as e2:
+                logger.warning(f"Failed to resend after wait: {e2}")
+        else:
+            logger.warning(f"Failed to send message due to unexpected error: {e}")
 
-# Use the existing 'bot' and 'app' instances defined earlier in the file.
-# Schedule a simple countdown background task and provide message endpoints
-# while avoiding redefinition of BOT_TOKEN, bot, logger or app.
+        
 
-from fastapi import FastAPI, BackgroundTasks
-import logging
+# ---------------------------------------------------------
+# FASTAPI STARTUP / SHUTDOWN
+# ---------------------------------------------------------
 
-# Initialize the app and logger
-app = FastAPI()
-logger = logging.getLogger(__name__)
-
-# Assuming send_countdown is defined somewhere else
-async def send_countdown():
-    """Send a countdown message to remind users of the upcoming draw."""
-    draw_date = "2025-12-31"  # Example date
-    current_time = time.time()
-    draw_time = time.mktime(time.strptime(draw_date, "%Y-%m-%d"))
-    time_left = int(draw_time - current_time)
-
-    if time_left > 0:
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"⏳ {time_left // 86400} days left till the next MegaWin draw!"  # 86400 seconds = 1 day
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send countdown to admin: {e}")
-
-# Define lifespan event
-async def lifespan(app: FastAPI):
-    """Handle app startup and shutdown."""
-    # On startup
+@app.on_event("startup")
+async def on_startup():
+    """Code to run when the app starts"""
     logger.info("🚀 App startup!")
-    await init_db()  # Your existing initialization logic
-    await set_bot_commands()  # Set bot commands if necessary
+    await init_db()  # Initialize your database
+    await set_bot_commands()  # Set bot commands
+    try:
+        # Set up the webhook for Telegram bot
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}")
+        logger.info("✅ Telegram webhook set successfully.")
+    except Exception as e:
+        # Handle FloodWait-like exceptions or any other error gracefully.
+        # Some aiogram versions expose 'retry_after' on the exception (e.g. FloodWait/TelegramRetryAfter).
+        retry_after = getattr(e, "retry_after", None)
+        if retry_after:
+            logger.warning(f"⏳ Flood control exceeded. Retrying in {retry_after} seconds...")
+            await asyncio.sleep(retry_after)
+            try:
+                await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}")
+                logger.info("✅ Telegram webhook set successfully (after retry).")
+            except Exception as e2:
+                logger.error(f"❌ Failed to set webhook after retry: {e2}")
+        else:
+            logger.error(f"❌ Failed to set webhook: {e}")
 
-    # Start the countdown in the background
-    background_tasks = BackgroundTasks()
-    background_tasks.add_task(send_countdown)  # Add the task to run in the background
-
-    yield  # This keeps the app running
-
-    # On shutdown
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Code to run when the app shuts down"""
     logger.info("🛑 App shutdown...")
     try:
+        # Remove the webhook when the app shuts down
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
         logger.error(f"❌ Failed to delete webhook: {e}")
 
-# Set the lifespan for the FastAPI app
-app = FastAPI(lifespan=lifespan)
+
 
 
 # Your existing background task notifications (reuse same bot)
@@ -745,7 +753,7 @@ async def cb_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "my_balance")
+@dp.callback_query(F.data == "view_balance")
 async def cb_balance(callback: CallbackQuery):
     await cmd_balance(callback.message)
     await callback.answer()
@@ -755,10 +763,16 @@ async def cb_balance(callback: CallbackQuery):
 # ---------------------------------------------------------
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
+    """Handle incoming Telegram updates via webhook."""
     try:
         data = await request.json()
-        update = Update.model_validate(data)
-        await dp.feed_update(bot, update)
+        # Construct/validate Update instance (support both pydantic v2 model_validate and fallback)
+        try:
+            update = Update.model_validate(data)
+        except Exception:
+            update = Update(**data)
+        # Process the update through the dispatcher
+        await dp.process_update(update)
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"❌ Telegram webhook error: {e}")
@@ -767,7 +781,7 @@ async def telegram_webhook(request: Request):
 
 async def set_webhook_with_retry():
     """Attempt to set the telegram webhook with retries on FloodWait."""
-    from aiogram.utils.exceptions import FloodWait
+    
 
     retries = 5
     for i in range(retries):
@@ -829,22 +843,31 @@ async def paystack_webhook(request: Request):
                 for _ in range(ticket_count):
                     db.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
 
-                # Affiliate commission reward
+                # Affiliate commission reward — update balance and notify after commit
+                notify_affiliate_id = None
                 if getattr(user, "affiliate_id", None):
                     q_aff = await db.execute(select(User).where(User.id == user.affiliate_id))
                     affiliate = q_aff.scalar_one_or_none()
                     if affiliate:
                         affiliate.commission_balance = (affiliate.commission_balance or 0) + 50  # ₦50 commission
                         db.add(affiliate)
+                        # prepare affiliate id to notify after successful commit
                         try:
-                            await bot.send_message(
-                                affiliate.telegram_id,
-                                f"💸 You earned ₦50 commission from your affiliate link! 💰"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to notify affiliate: {e}")
+                            notify_affiliate_id = int(affiliate.telegram_id) if affiliate.telegram_id is not None else None
+                        except Exception:
+                            notify_affiliate_id = None
 
                 await db.commit()
+
+                # Notify affiliate outside DB transaction to avoid blocking/locking issues
+                if notify_affiliate_id:
+                    try:
+                        await bot.send_message(
+                            chat_id=notify_affiliate_id,
+                            text="💸 You earned ₦50 commission from your affiliate link! 💰"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to notify affiliate: {e}")
 
         # Notify the buyer
         try:
@@ -914,37 +937,10 @@ async def paystack_redirect():
 # ---------------------------------------------------------
 # STARTUP / SHUTDOWN
 # ---------------------------------------------------------
-from fastapi import FastAPI
-import asyncio
-import logging
-
-# Use FastAPI's lifespan event handler
-app = FastAPI(lifespan=lifespan)
-
-async def lifespan(app: FastAPI):
-    """Manage startup and shutdown."""
-    # Startup logic
-    logger.info("🚀 App startup!")
-
-    await init_db()
-    await set_bot_commands()
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(f"{PUBLIC_URL}{TELEGRAM_WEBHOOK_PATH}",
-                              allowed_updates=["message", "callback_query"])
-        logger.info("✅ Telegram webhook set successfully.")
-    except Exception as e:
-        logger.error(f"❌ Failed to set webhook: {e}")
-
-    yield  # Keeps the app running
-
-    # Shutdown logic
-    logger.info("🛑 App shutdown...")
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-    except Exception as e:
-        logger.error(f"❌ Failed to delete webhook: {e}")
+# Note: the startup and shutdown handlers are already declared above with
+# @app.on_event("startup") and @app.on_event("shutdown"), and 'app' was
+# created earlier as FastAPI(), so we don't recreate the app or use a
+# separate lifespan here to avoid referencing undefined names.
 
 
 
