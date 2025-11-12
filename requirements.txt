@@ -4,3 +4,4 @@ uvicorn==0.30.6
 sqlalchemy==2.0.31
 python-dotenv==1.0.1
 aiohttp==3.9.5
+alembic==1.13.1
