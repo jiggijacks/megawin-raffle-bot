@@ -4,5 +4,3 @@ uvicorn==0.30.0
 sqlalchemy==2.0.23
 python-dotenv==1.0.1
 aiohttp==3.9.5
-aiosqlite==0.20.0
-pydantic==2.5.3

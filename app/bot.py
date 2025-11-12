@@ -772,7 +772,10 @@ async def cb_balance(callback: CallbackQuery):
 # ---------------------------------------------------------
 # TELEGRAM WEBHOOK
 # ---------------------------------------------------------
-@app.post("/webhook/telegram")
+from fastapi import FastAPI
+
+app = FastAPI()
+
 async def telegram_webhook(request: Request):
     """Handle incoming Telegram updates via webhook."""
     try:
@@ -811,6 +814,10 @@ async def set_webhook_with_retry():
 # ---------------------------------------------------------
 # PAYSTACK WEBHOOK
 # ---------------------------------------------------------
+from fastapi import FastAPI
+
+app = FastAPI()
+
 @app.post(PAYSTACK_WEBHOOK_PATH)
 async def paystack_webhook(request: Request):
     """Handle Paystack webhook and add confirmed tickets."""
