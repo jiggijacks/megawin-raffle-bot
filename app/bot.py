@@ -140,7 +140,7 @@ async def cmd_start(message: Message, command: Command):
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
 
-    # Handle affiliate and referrals
+        # Handle affiliate and referrals
     args = getattr(command, "args", None)
     if not args:
         try:
@@ -150,6 +150,7 @@ async def cmd_start(message: Message, command: Command):
 
     if args:
         if args.startswith("aff"):
+            # ✅ Affiliate join (different from referral)
             affiliate_code = args.strip()
             async with async_session() as s:
                 async with s.begin():
@@ -159,9 +160,11 @@ async def cmd_start(message: Message, command: Command):
                         user.affiliate_id = affiliate.id
                         s.add(user)
                         await s.commit()
-                        await message.answer(f"🤝 You joined via affiliate link from <b>{affiliate.username or affiliate.telegram_id}</b>!")
-
+                        await message.answer(
+                            f"🤝 You joined via affiliate link from <b>{affiliate.username or affiliate.telegram_id}</b>!"
+                        )
         else:
+            # ✅ Regular referral (no ticket reward yet)
             try:
                 ref_tg_id = int(args)
                 if ref_tg_id == tg_id:
@@ -173,36 +176,27 @@ async def cmd_start(message: Message, command: Command):
                         q = await s.execute(select(User).where(User.telegram_id == ref_tg_id))
                         ref_user = q.scalar_one_or_none()
 
-                        q2 = await s.execute(
-                            select(User).where(User.referred_by == ref_tg_id, User.telegram_id == tg_id)
-                        )
-                        already_referred = q2.scalar_one_or_none()
-
-                        if ref_user and not already_referred:
+                        if ref_user and user.referred_by is None:
                             user.referred_by = ref_tg_id
-                            ref_user.referral_count = (ref_user.referral_count or 0) + 1
-                            s.add_all([user, ref_user])
-
-                            if ref_user.referral_count >= 5:
-                                ticket = RaffleEntry(user_id=ref_user.id, free_ticket=True)
-                                s.add(ticket)
-                                ref_user.referral_count -= 5
-                                await bot.send_message(
-                                    ref_user.telegram_id,
-                                    "🎉 You referred 5 users and earned a free ticket!"
-                                )
-
+                            s.add(user)
                             await s.commit()
+                            await message.answer(
+                                f"🎯 You joined using a referral from <b>{ref_user.username or ref_tg_id}</b>!"
+                            )
             except ValueError:
-                pass  # Ignore invalid referral IDs
+                pass
+
 
     ref_link = f"https://t.me/{(await bot.get_me()).username}?start={tg_id}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[  # Build keyboard
-        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
-        [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
-        [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
-        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
-    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+    [InlineKeyboardButton(text="🎫 My Tickets", callback_data="view_tickets")],
+    [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
+    [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
+    [InlineKeyboardButton(text="💼 Affiliate", callback_data="view_affiliate")],
+    [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+])
+
 
     await message.answer(
         "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
@@ -830,7 +824,27 @@ async def paystack_webhook(request: Request):
                 # Apply promo multiplier (if active)
                 ticket_count = promo.multiplier if promo.active else 1
                 for _ in range(ticket_count):
-                    db.add(RaffleEntry(user_id=user.id, payment_ref=ref, free_ticket=False))
+                        # ✅ Handle referral reward based on payment (not on joining)
+    if getattr(user, "referred_by", None):
+        q_ref = await db.execute(select(User).where(User.telegram_id == user.referred_by))
+        referrer = q_ref.scalar_one_or_none()
+        if referrer:
+            referrer.referral_count = (referrer.referral_count or 0) + 1
+
+            # Reward free ticket after every 5 successful referred payments
+            if referrer.referral_count >= 5:
+                db.add(RaffleEntry(user_id=referrer.id, free_ticket=True))
+                referrer.referral_count = 0  # reset counter
+                try:
+                    await bot.send_message(
+                        referrer.telegram_id,
+                        "🎉 You referred 5 paying users and earned a FREE raffle ticket!"
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not notify referrer: {e}")
+
+            db.add(referrer)
+
 
                 # Affiliate commission reward — update balance and notify after commit
                 notify_affiliate_id = None
