@@ -4,28 +4,14 @@ import random
 import aiohttp
 import uvicorn
 import sys
-print(sys.path)
+import asyncio
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-load_dotenv()  # This loads the environment variables from the .env file
-
-# Support different aiogram versions for the FloodWait exception import,
-# and provide a lightweight fallback if neither import is available.
-try:
-    from aiogram.exceptions import FloodWait
-except Exception:
-    try:
-        from aiogram.utils.exceptions import FloodWait
-    except Exception:
-        class FloodWait(Exception):
-            def __init__(self, retry_after: int = 0):
-                super().__init__("FloodWait")
-                self.retry_after = retry_after
-
-from fastapi import FastAPI, Request, HTTPException, Response, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-from aiogram.filters import Command,F
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
@@ -37,21 +23,15 @@ from aiogram.types import (
 )
 from sqlalchemy import select, func
 from app.database import async_session, init_db, User, RaffleEntry
-import os
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN not set in environment")
-else:
-    print("✅ BOT_TOKEN loaded successfully")
 
-# ---------------------------------------------------------
-# ENVIRONMENT
-# ---------------------------------------------------------
+print(sys.path)
+load_dotenv()
+
+# Environment
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PORT = int(os.getenv("PORT", "8080"))
-
 PUBLIC_URL = os.getenv("PUBLIC_URL", "https://megawinraffle.up.railway.app")
 TELEGRAM_WEBHOOK_PATH = "/webhook/telegram"
 PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
@@ -59,19 +39,16 @@ PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN not set in environment")
 
-# ---------------------------------------------------------
-# LOGGING
-# ---------------------------------------------------------
+# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 logger.info("✅ Environment loaded")
 
-# ---------------------------------------------------------
-# BOT / DISPATCHER / FASTAPI
-# ---------------------------------------------------------
+# Bot / Dispatcher / FastAPI
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 app = FastAPI()
+
 
 # ---------------------------------------------------------
 # PROMO MANAGER (with auto-expiration)
@@ -744,27 +721,27 @@ async def send_message(background_tasks: BackgroundTasks):
 # ---------------------------------------------------------
 # CALLBACKS
 # ---------------------------------------------------------
-@dp.callback_query(F.data == "buy_ticket")
+@dp.callback_query(lambda c: c.data == "buy_ticket")
 async def cb_buy(callback: CallbackQuery):
     await cmd_buy(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "view_tickets")
+@dp.callback_query(lambda c: c.data == "view_tickets")
 async def cb_tickets(callback: CallbackQuery):
     await cmd_ticket(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "my_referrals")
+@dp.callback_query(lambda c: c.data == "my_referrals")
 async def cb_ref(callback: CallbackQuery):
     await cmd_referrals(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "help_cmd")
+@dp.callback_query(lambda c: c.data == "help_cmd")
 async def cb_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "view_balance")
+@dp.callback_query(lambda c: c.data == "view_balance")
 async def cb_balance(callback: CallbackQuery):
     await cmd_balance(callback.message)
     await callback.answer()
@@ -772,25 +749,21 @@ async def cb_balance(callback: CallbackQuery):
 # ---------------------------------------------------------
 # TELEGRAM WEBHOOK
 # ---------------------------------------------------------
-from fastapi import FastAPI
-
-app = FastAPI()
-
+@app.post(TELEGRAM_WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
-    """Handle incoming Telegram updates via webhook."""
+    """Handle Telegram updates."""
     try:
         data = await request.json()
-        # Construct/validate Update instance (support both pydantic v2 model_validate and fallback)
         try:
             update = Update.model_validate(data)
         except Exception:
             update = Update(**data)
-        # Process the update through the dispatcher
-        await dp.process_update(update)
+        await dp.feed_raw_update(bot, data)
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"❌ Telegram webhook error: {e}")
         return {"status": "error", "message": str(e)}
+
 
 
 async def set_webhook_with_retry():
@@ -814,9 +787,7 @@ async def set_webhook_with_retry():
 # ---------------------------------------------------------
 # PAYSTACK WEBHOOK
 # ---------------------------------------------------------
-from fastapi import FastAPI
 
-app = FastAPI()
 
 @app.post(PAYSTACK_WEBHOOK_PATH)
 async def paystack_webhook(request: Request):
