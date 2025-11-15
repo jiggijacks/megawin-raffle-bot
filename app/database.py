@@ -1,5 +1,5 @@
 # app/database.py
-import datetime
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -23,8 +23,8 @@ class User(Base):
     telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String, nullable=True)
     referral_count = Column(Integer, default=0)
-    referred_by = Column(Integer, ForeignKey("users.telegram_id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    referred_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     affiliate_code = Column(String, unique=True, nullable=True)
     commission_balance = Column(Integer, default=0)
 
@@ -38,15 +38,15 @@ class RaffleEntry(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     payment_ref = Column(String, unique=True, nullable=True)
     free_ticket = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="tickets")
 
 # ---------------------------------
 # Async Database Engine + Session
 # ---------------------------------
-engine = create_async_engine(DATABASE_URL, echo=False)
-async_session = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+engine = create_async_engine(DATABASE_URL, echo=False, future=True)
+async_session = sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
 # ---------------------------------
 # Utility to Initialize DB

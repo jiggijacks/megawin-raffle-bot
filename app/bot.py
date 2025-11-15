@@ -5,6 +5,12 @@ import aiohttp
 import uvicorn
 import sys
 import asyncio
+import random
+import string
+import os
+import asyncio
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import select
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
@@ -120,6 +126,7 @@ async def get_or_create_user(telegram_id: int, username: str | None = None):
         await session.refresh(user)
         return user
 
+
 async def set_bot_commands():
     cmds = [
         BotCommand(command="start", description="Start / Referral link"),
@@ -130,6 +137,11 @@ async def set_bot_commands():
         BotCommand(command="balance", description="Check your spend & referral earnings")  # ✅ NEW
     ]
     await bot.set_my_commands(cmds)
+
+def generate_ticket_code():
+    letter = random.choice(string.ascii_uppercase)
+    number = random.randint(100, 999)
+    return f"#{letter}{number}"
 
 # ---------------------------------------------------------
 # COMMAND HANDLERS
@@ -675,7 +687,37 @@ async def on_shutdown():
     except Exception as e:
         logger.error(f"❌ Failed to delete webhook: {e}")
 
+background_state = {"stop": None, "countdown": None, "auto_draw": None}
 
+
+@app.on_event("startup")
+async def start_background_tasks():
+    if background_state["stop"] is not None:
+        return
+
+    stop_event = asyncio.Event()
+    background_state["stop"] = stop_event
+
+    background_state["countdown"] = asyncio.create_task(daily_countdown_task(stop_event))
+    background_state["auto_draw"] = asyncio.create_task(auto_winner_task(stop_event))
+
+    logger.info("🚀 Background scheduler started.")
+
+
+@app.on_event("shutdown")
+async def stop_background_tasks():
+    stop = background_state.get("stop")
+    if stop:
+        stop.set()
+        await asyncio.sleep(0.5)
+
+        for t in ("countdown", "auto_draw"):
+            task = background_state.get(t)
+            if task and not task.done():
+                task.cancel()
+
+        logger.info("🛑 Background scheduler stopped.")
+# ---------------------------------------------------------
 
 
 # Your existing background task notifications (reuse same bot)
@@ -785,14 +827,13 @@ async def set_webhook_with_retry():
 
 @app.post(PAYSTACK_WEBHOOK_PATH)
 async def paystack_webhook(request: Request):
-    """Handle Paystack webhook and add confirmed tickets."""
+    """Handle Paystack webhook and add confirmed tickets + referral reward."""
     try:
         payload = await request.json()
         event = payload.get("event")
         data = payload.get("data", {})
         logger.info(f"📩 Paystack event: {event}")
 
-        # Only handle successful payments
         if event != "charge.success" or data.get("status") != "success":
             return {"status": "ignored"}
 
@@ -802,94 +843,119 @@ async def paystack_webhook(request: Request):
         if not tg_id or not ref:
             return {"status": "error", "message": "Missing telegram_id or reference"}
 
-        # Ensure tg_id is int when used for DB queries / messaging
         try:
             tg_id_int = int(tg_id)
         except Exception:
             tg_id_int = tg_id
 
         ticket_count = 0
+
         async with async_session() as db:
-            # find user
+
+            # ✔ Get user
             uq = await db.execute(select(User).where(User.telegram_id == tg_id_int))
             user = uq.scalar_one_or_none()
             if not user:
-                logger.warning(f"User with telegram_id {tg_id} not found for payment {ref}")
                 return {"status": "error", "message": "User not found"}
 
+            # ✔ Prevent duplicate credit
             q = await db.execute(select(RaffleEntry).where(RaffleEntry.payment_ref == ref))
             entry = q.scalar_one_or_none()
 
             if not entry:
-                # Apply promo multiplier (if active)
+
+                # ✔ Promo logic
                 ticket_count = promo.multiplier if promo.active else 1
+
+                # Add tickets
                 for _ in range(ticket_count):
-                        # ✅ Handle referral reward based on payment (not on joining)
-    if getattr(user, "referred_by", None):
-        q_ref = await db.execute(select(User).where(User.telegram_id == user.referred_by))
-        referrer = q_ref.scalar_one_or_none()
-        if referrer:
-            referrer.referral_count = (referrer.referral_count or 0) + 1
+                    db.add(RaffleEntry(
+                        user_id=user.id,
+                        payment_ref=ref,
+                        free_ticket=False
+                    ))
 
-            # Reward free ticket after every 5 successful referred payments
-            if referrer.referral_count >= 5:
-                db.add(RaffleEntry(user_id=referrer.id, free_ticket=True))
-                referrer.referral_count = 0  # reset counter
-                try:
-                    await bot.send_message(
-                        referrer.telegram_id,
-                        "🎉 You referred 5 paying users and earned a FREE raffle ticket!"
+                # -------------------------------
+                # 🔥 REFERRAL REWARD (ONLY FOR PAID USERS)
+                # -------------------------------
+                if getattr(user, "referred_by", None):
+
+                    q_ref = await db.execute(
+                        select(User).where(User.telegram_id == user.referred_by)
                     )
-                except Exception as e:
-                    logger.warning(f"Could not notify referrer: {e}")
+                    referrer = q_ref.scalar_one_or_none()
 
-            db.add(referrer)
+                    if referrer:
+                        referrer.referral_count = (referrer.referral_count or 0) + 1
 
+                        # Every 5 paid referrals = free ticket
+                        if referrer.referral_count >= 5:
+                            db.add(RaffleEntry(
+                                user_id=referrer.id,
+                                free_ticket=True,
+                                payment_ref=f"ref_reward_{referrer.id}"
+                            ))
+                            referrer.referral_count = 0
 
-                # Affiliate commission reward — update balance and notify after commit
+                            # notify referrer
+                            try:
+                                await bot.send_message(
+                                    referrer.telegram_id,
+                                    "🎉 You referred 5 paying users and earned a FREE ticket!"
+                                )
+                            except:
+                                pass
+
+                        db.add(referrer)
+
+                # -------------------------------
+                # 💸 AFFILIATE COMMISSION
+                # -------------------------------
                 notify_affiliate_id = None
+
                 if getattr(user, "affiliate_id", None):
-                    q_aff = await db.execute(select(User).where(User.id == user.affiliate_id))
+
+                    q_aff = await db.execute(
+                        select(User).where(User.id == user.affiliate_id)
+                    )
                     affiliate = q_aff.scalar_one_or_none()
+
                     if affiliate:
-                        affiliate.commission_balance = (affiliate.commission_balance or 0) + 50  # ₦50 commission
+                        affiliate.commission_balance = (affiliate.commission_balance or 0) + 50
                         db.add(affiliate)
-                        # prepare affiliate id to notify after successful commit
+
                         try:
-                            notify_affiliate_id = int(affiliate.telegram_id) if affiliate.telegram_id is not None else None
-                        except Exception:
+                            notify_affiliate_id = int(affiliate.telegram_id)
+                        except:
                             notify_affiliate_id = None
 
                 await db.commit()
 
-                # Notify affiliate outside DB transaction to avoid blocking/locking issues
+                # Notify affiliate
                 if notify_affiliate_id:
                     try:
                         await bot.send_message(
-                            chat_id=notify_affiliate_id,
-                            text="💸 You earned ₦50 commission from your affiliate link! 💰"
+                            notify_affiliate_id,
+                            "💸 You earned ₦50 commission from your affiliate link!"
                         )
-                    except Exception as e:
-                        logger.warning(f"Failed to notify affiliate: {e}")
+                    except:
+                        pass
 
-        # Notify the buyer
+        # Notify buyer
         try:
             await bot.send_message(
-                chat_id=int(tg_id_int),
-                text=(
-                    f"✅ <b>Payment confirmed!</b>\n"
-                    f"🎟 You received <b>{ticket_count}</b> ticket{'s' if ticket_count > 1 else ''} "
-                    f"for your payment.\nUse /ticket to view your tickets."
-                ),
+                tg_id_int,
+                f"✅ Payment confirmed!\n🎟 You received <b>{ticket_count}</b> ticket(s).\nUse /ticket to view."
             )
-        except Exception as e:
-            logger.warning(f"Failed to notify user {tg_id}: {e}")
+        except:
+            pass
 
         return {"status": "ok"}
 
     except Exception as e:
         logger.error(f"❌ Paystack webhook processing error: {e}")
         return {"status": "error", "message": str(e)}
+
 
 
 @app.get("/webhook/paystack")
@@ -935,7 +1001,154 @@ async def paystack_redirect():
     """
     return HTMLResponse(content=html_content)
 
+# ENV configuration
+DRAW_DATETIME_STR = os.getenv("DRAW_DATETIME")  # like 2025-11-20T18:00:00Z
+DAILY_BROADCAST_HOUR = int(os.getenv("DAILY_BROADCAST_HOUR", "12"))
 
+
+async def auto_winner_task(stop_event: asyncio.Event):
+    """Automatically pick & announce winner at DRAW_DATETIME."""
+    draw_dt = parse_draw_datetime()
+    if not draw_dt:
+        logger.info("Auto-winner disabled — DRAW_DATETIME not set.")
+        return
+
+    now = datetime.now(timezone.utc)
+    if draw_dt <= now:
+        logger.info("DRAW_DATETIME already passed — skipping auto-winner.")
+        return
+
+    wait_time = (draw_dt - now).total_seconds()
+    logger.info(f"🏆 Auto-winner scheduled at {draw_dt.isoformat()}")
+
+    # wait until draw time unless stopping early
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=wait_time)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    # Time to draw winner
+    try:
+        async with async_session() as s:
+            q = await s.execute(select(RaffleEntry))
+            entries = q.scalars().all()
+
+            if not entries:
+                msg = "📢 No tickets sold — no winner selected."
+                await broadcast_message(msg)
+                return
+
+            winner_entry = random.choice(entries)
+
+            q2 = await s.execute(select(User).where(User.id == winner_entry.user_id))
+            winner = q2.scalar_one_or_none()
+
+            announcement = (
+                f"🏆 <b>MEGAWIN DRAW RESULT</b>\n\n"
+                f"🎉 Winner: @{winner.username or winner.telegram_id}\n"
+                f"🎫 Ticket #{winner_entry.id}\n\n"
+                "Congratulations! We will contact the winner privately."
+            )
+
+            await broadcast_message(announcement)
+
+            # Private message
+            try:
+                await bot.send_message(winner.telegram_id,
+                                       "🏆 Congratulations! You won the MegaWin draw!")
+            except:
+                pass
+
+            # Optionally reset all tickets
+            await s.execute("DELETE FROM raffle_entries")
+            await s.commit()
+
+            logger.info("🏆 Auto-winner announced successfully.")
+
+    except Exception as e:
+        logger.error(f"Auto-winner failed: {e}")
+
+
+def parse_draw_datetime():
+    """Return draw datetime in UTC or None."""
+    if not DRAW_DATETIME_STR:
+        return None
+    try:
+        dt = datetime.fromisoformat(DRAW_DATETIME_STR.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc)
+    except:
+        logger.warning("Invalid DRAW_DATETIME format.")
+        return None
+
+
+async def get_all_user_ids():
+    """Return list of Telegram IDs for all users (excluding admin)."""
+    async with async_session() as s:
+        q = await s.execute(select(User.telegram_id))
+        rows = q.all()
+
+    ids = []
+    for r in rows:
+        try:
+            tid = int(r[0])
+            if tid != ADMIN_ID:
+                ids.append(tid)
+        except:
+            continue
+    return ids
+
+
+async def daily_countdown_task(stop_event: asyncio.Event):
+    """Background task: send daily countdown message."""
+    logger.info("⏳ Starting daily countdown scheduler...")
+    while not stop_event.is_set():
+
+        now = datetime.now(timezone.utc)
+
+        # Schedule next run (next DAILY_BROADCAST_HOUR)
+        next_run = now.replace(hour=DAILY_BROADCAST_HOUR, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+
+        wait_time = (next_run - now).total_seconds()
+
+        # Sleep until time (unless shutdown event triggers)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=wait_time)
+            break  # stop event triggered
+        except asyncio.TimeoutError:
+            pass
+
+        # Send countdown message
+        draw_dt = parse_draw_datetime()
+        if draw_dt:
+            delta = draw_dt - datetime.now(timezone.utc)
+
+            if delta.total_seconds() <= 0:
+                msg = "🎉 The MegaWin draw is happening soon — stay tuned!"
+            else:
+                days = delta.days
+                if days > 0:
+                    msg = f"⏳ {days} day(s) left till the next MegaWin draw!"
+                else:
+                    hours = int(delta.total_seconds() // 3600)
+                    msg = f"⏳ {hours} hour(s) left till the MegaWin draw!"
+        else:
+            msg = "⏳ Countdown is active — use /buy to join MegaWin!"
+
+        user_ids = await get_all_user_ids()
+
+        for uid in user_ids:
+            try:
+                await bot.send_message(uid, msg)
+                await asyncio.sleep(0.05)  # avoid flood limit
+            except Exception as e:
+                logger.debug(f"Countdown failed for {uid}: {e}")
+
+    logger.info("⏳ Countdown scheduler stopped.")
+
+    
 
 # ---------------------------------------------------------
 # STARTUP / SHUTDOWN
