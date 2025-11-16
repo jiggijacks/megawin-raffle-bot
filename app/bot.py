@@ -21,6 +21,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
+from routers.user_router import user_router
 from aiogram import Router
 router = Router()
 from aiogram.types import (
@@ -1461,3 +1462,4 @@ if __name__ == "__main__":
     # Run Uvicorn by import string to avoid issues with objects created at import time
     # (for example when using auto-reload or certain event-loop interactions).
     uvicorn.run("app.bot:app", host="0.0.0.0", port=PORT, log_level="info")
+asyncio.run(dp.start_polling(bot))
