@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
+from aiogram.filters import Text
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
