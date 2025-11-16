@@ -70,6 +70,9 @@ bot = Bot(
 
 dp = Dispatcher()
 app = FastAPI()
+@app.get("/")
+async def home():
+    return {"status": "ok", "message": "MegaWin bot server running"}
 # ==================================
 # HELPERS & UTILITY FUNCTIONS
 # ==================================
