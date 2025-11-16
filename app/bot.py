@@ -22,6 +22,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
 from routers.user_router import user_router
+from app.models import User, RaffleEntry
 from aiogram import Router
 router = Router()
 from aiogram.types import (
