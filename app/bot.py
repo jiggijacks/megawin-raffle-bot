@@ -1,8 +1,3 @@
-# ============================
-# MEGAWIN RAFFLE BOT (WEBHOOK)
-# CLEAN AIROGRAM V3 VERSION
-# ============================
-
 import os
 import random
 import string
@@ -871,13 +866,9 @@ async def on_shutdown():
 
 @app.post(TELEGRAM_WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
-    body = await request.json()
-    try:
-        update = Update.model_validate(body)
-    except:
-        update = Update(**body)
-
-    await dp.feed_raw_update(bot, body)
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot, update)
     return {"ok": True}
 
 
