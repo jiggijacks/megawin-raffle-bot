@@ -13,10 +13,13 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     username = Column(String, nullable=True)
     referral_count = Column(Integer, default=0)
     referred_by = Column(Integer, ForeignKey("users.telegram_id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    ticket_code = Column(String, nullable=False, unique=True)
+    free_ticket = Column(Boolean, default=False)
 
     # Relationship to raffle entries
     tickets = relationship("RaffleEntry", back_populates="user", cascade="all, delete-orphan")

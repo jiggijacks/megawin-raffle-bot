@@ -1,6 +1,7 @@
 import os
 import logging
 import random
+from tokenize import String
 import aiohttp
 import uvicorn
 import sys
@@ -41,6 +42,8 @@ PORT = int(os.getenv("PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", "https://megawinraffle.up.railway.app")
 TELEGRAM_WEBHOOK_PATH = "/webhook/telegram"
 PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
+REQUIRED_CHANNEL = "@MegaWinRaffle"
+
 
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN not set in environment")
@@ -143,11 +146,37 @@ def generate_ticket_code():
     number = random.randint(100, 999)
     return f"#{letter}{number}"
 
+async def user_in_channel(user_id: int):
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except:
+        return False
+
+
 # ---------------------------------------------------------
 # COMMAND HANDLERS
 # ---------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
+        # ---------------------------------------------------------
+    # 🔥 CHANNEL JOIN CHECK — ADD THIS BLOCK
+    # ---------------------------------------------------------
+    if not await user_in_channel(message.from_user.id):
+        join_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Join Channel", url="https://t.me/MegaWinRaffle")],
+            [InlineKeyboardButton(text="✅ I Joined", callback_data="check_joined")]
+        ])
+
+        return await message.answer(
+            "❗ <b>You must join our channel to continue!</b>\n"
+            "👉 <b>@MegaWinRaffle</b>\n\n"
+            "Tap the button below to join.",
+            reply_markup=join_kb
+        )
+    # ---------------------------------------------------------
+    # END CHANNEL CHECK
+    # ---------------------------
     tg_id = message.from_user.id
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
@@ -221,6 +250,13 @@ async def cmd_start(message: Message, command: Command):
     )
 
 # Same structure for other command handlers and webhook handling...
+
+@dp.callback_query_handler(lambda c: c.data == "check_joined")
+async def check_joined(call: CallbackQuery):
+    if await user_in_channel(call.from_user.id):
+        await call.message.edit_text("✅ You have joined! Please send /start again.")
+    else:
+        await call.answer("❗ You have not joined the channel yet.", show_alert=True)
 
 
 
@@ -376,34 +412,53 @@ async def cmd_stats(message: Message):
 
 @dp.message(Command("ticket"))
 async def cmd_ticket(message: Message):
-    """Show user's tickets and summary with clean layout."""
+    """Show user's tickets with code + date + summary."""
     tg_id = message.from_user.id
+
     async with async_session() as s:
+        # Fetch user
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
         user = q.scalar_one_or_none()
+
         if not user:
             await message.answer("🚫 You don't have any tickets yet.")
             return
 
-        q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
+        # Fetch user's tickets
+        q2 = await s.execute(
+            select(RaffleEntry).where(RaffleEntry.user_id == user.id).order_by(RaffleEntry.id.desc())
+        )
         tickets = q2.scalars().all()
+
         if not tickets:
-            await message.answer("🚫 You have no tickets yet. Use /buy.")
+            await message.answer("🚫 You have no tickets yet. Use /buy to get one.")
             return
 
-        total_tickets = len(tickets)
+        # Summary calculations
+        total = len(tickets)
         free_tickets = sum(1 for t in tickets if t.free_ticket)
-        paid_tickets = total_tickets - free_tickets
-        total_value = paid_tickets * 500
-        balance_value = free_tickets * 500 - paid_tickets * 500
-        balance_display = abs(balance_value)
+        paid_tickets = total - free_tickets
 
+        # Build ticket list text
+        ticket_lines = []
+        for t in tickets:
+            ticket_lines.append(
+                f"🎫 <b>{t.ticket_code}</b> — <i>{t.created_at.strftime('%Y-%m-%d %H:%M')}</i>"
+                f" {'(FREE)' if t.free_ticket else '(PAID)'}"
+            )
+
+        ticket_block = "\n".join(ticket_lines)
+
+        # Final message
         await message.answer(
-            f"🎟 <b>Your Ticket Summary</b>\n\n"
-            f"🎫 Available Tickets: {total_tickets}\n"
-            f"🎁 Free Tickets: {free_tickets}\n"
-            f"💰 Net Balance: ₦{balance_display:,}"
+            "🎟 <b>Your Tickets</b>\n\n"
+            f"{ticket_block}\n\n"
+            "📊 <b>Summary</b>\n"
+            f"• Total Tickets: <b>{total}</b>\n"
+            f"• Paid Tickets: <b>{paid_tickets}</b>\n"
+            f"• Free Tickets: <b>{free_tickets}</b>\n"
         )
+
 
 
 
@@ -625,6 +680,108 @@ async def cmd_leaderboard(message: Message):
             msg_lines.append(f"{i}. @{buyer.username} - {buyer.ticket_count} Tickets")
 
         await message.answer("\n".join(msg_lines))
+
+@dp.message_handler(commands=["sendwinner"])
+async def send_winner(message: types.Message):
+    # Format: /sendwinner <telegram_id> <ticket_code>
+    args = message.text.split()
+
+    if len(args) != 3:
+        return await message.reply("Usage:\n/sendwinner <telegram_id> <ticket_code>")
+
+    telegram_id = args[1]
+    ticket_code = args[2]
+
+    winner_msg = (
+        f"🎉 *CONGRATULATIONS! YOU ARE THE WINNER!*\n\n"
+        f"🏆 Winning Ticket: *{ticket_code}*\n"
+        f"💰 Prize: ₦10,000 MegaWin Reward!\n\n"
+        f"Our team will contact you shortly. 🔥"
+    )
+
+    try:
+        await bot.send_message(telegram_id, winner_msg, parse_mode="Markdown")
+        await message.reply("Winner message sent successfully!")
+    except Exception as e:
+        await message.reply(f"Failed to send winner message:\n{e}")
+
+@dp.message_handler(commands=["losers"])
+async def send_loser_messages(message: types.Message):
+    # Must run AFTER the winner is decided
+    session = SessionLocal()
+
+    # 1. Get winner entry
+    winner = session.query(RaffleEntry).filter(RaffleEntry.is_winner == True).first()
+
+    if not winner:
+        session.close()
+        return await message.reply("❗ No winner selected yet.")
+
+    winner_user_id = winner.user_id
+
+    # 2. Get all participants EXCEPT the winner
+    losers = session.query(RaffleEntry).filter(
+        RaffleEntry.user_id != winner_user_id
+    ).all()
+
+    if not losers:
+        session.close()
+        return await message.reply("No losers found (only one participant).")
+
+    loser_msg_template = (
+        "😔 *Raffle Result*\n\n"
+        "Thank you for participating in this week’s MegaWin Raffle!\n\n"
+        "Unfortunately, you didn’t win this round… but don’t worry!\n"
+        "Another raffle starts soon, and your luck might shine next time. 🍀\n\n"
+        "Stay tuned and keep playing! 🚀🔥"
+    )
+
+    # 3. Generate message list for admin to copy
+    text_output = "📨 *Loser Broadcast List*\n\nCopy and send these messages:\n"
+
+    unique_users = set()
+
+    for entry in losers:
+        if entry.telegram_id not in unique_users:
+            unique_users.add(entry.telegram_id)
+            text_output += f"\n---\nTo: `{entry.telegram_id}`\n\n{loser_msg_template}\n"
+
+    session.close()
+
+    await message.reply(text_output, parse_mode="Markdown")
+
+@dp.callback_query(F.data == "view_affiliate")
+async def view_affiliate_handler(callback: CallbackQuery):
+    tg_id = callback.from_user.id
+
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+
+    if not user:
+        await callback.answer("User not found.", show_alert=True)
+        return
+
+    # Generate their affiliate link
+    affiliate_code = user.affiliate_code
+    if not affiliate_code:
+        affiliate_code = f"aff{tg_id}"
+        user.affiliate_code = affiliate_code
+        async with async_session() as s:
+            async with s.begin():
+                s.add(user)
+                await s.commit()
+
+    aff_link = f"https://t.me/{(await bot.get_me()).username}?start={affiliate_code}"
+
+    await callback.message.answer(
+        f"💼 <b>Your Affiliate Dashboard</b>\n\n"
+        f"🪪 <b>Affiliate Code:</b> <code>{affiliate_code}</code>\n"
+        f"🔗 <b>Your Affiliate Link:</b>\n<code>{aff_link}</code>\n\n"
+        f"📌 Share this link and earn commissions!",
+    )
+    await callback.answer()
+
 
 # ---------------------------------------------------------
 # Error Handling for Flood Control (v3.x)
@@ -869,11 +1026,14 @@ async def paystack_webhook(request: Request):
 
                 # Add tickets
                 for _ in range(ticket_count):
-                    db.add(RaffleEntry(
-                        user_id=user.id,
-                        payment_ref=ref,
-                        free_ticket=False
-                    ))
+                   entry = RaffleEntry(
+                    user_id=user.id,
+                    amount=amount,
+                    payment_reference=reference,
+                    telegram_id=user.telegram_id,
+                    ticket_code=generate_ticket_code()   # NEW PART
+                )
+                    
 
                 # -------------------------------
                 # 🔥 REFERRAL REWARD (ONLY FOR PAID USERS)
@@ -955,6 +1115,7 @@ async def paystack_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ Paystack webhook processing error: {e}")
         return {"status": "error", "message": str(e)}
+
 
 
 
