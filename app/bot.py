@@ -262,7 +262,7 @@ async def cmd_start(message: Message, command: Command):
 
 # Same structure for other command handlers and webhook handling...
 
-@dp.callback_query(Text("check_joined"))
+@dp.callback_query(lambda c: c.data == "check_joined")
 async def check_joined_callback(query: CallbackQuery):
     user_id = query.from_user.id
     try:
@@ -274,7 +274,7 @@ async def check_joined_callback(query: CallbackQuery):
     except Exception:
         await query.message.edit_text("⚠️ Please join our channel first to use the bot.")
 
-@dp.callback_query(Text("dashboard"))
+@dp.callback_query(lambda c: c.data == "dashboard")
 async def dashboard_callback(query: CallbackQuery):
     user_id = query.from_user.id
     async with async_session() as s:
@@ -296,7 +296,7 @@ async def dashboard_callback(query: CallbackQuery):
 # ---------------------------
 # CALLBACK HANDLERS
 # ---------------------------
-@dp.callback_query(Text("view_affiliate"))
+@dp.callback_query(lambda c: c.data == "view_affiliate")
 async def view_affiliate_callback(query: CallbackQuery):
     user_id = query.from_user.id
     async with async_session() as s:
@@ -792,7 +792,7 @@ async def send_loser_messages(message: types.Message):
 
     await message.reply(text_output, parse_mode="Markdown")
 
-@dp.callback_query(F.data == "view_affiliate")
+@dp.callback_query(lambda c: c.data == "view_affiliate")
 async def view_affiliate_handler(callback: CallbackQuery):
     tg_id = callback.from_user.id
 
