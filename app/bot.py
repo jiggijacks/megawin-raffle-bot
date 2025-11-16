@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
@@ -130,16 +131,22 @@ async def get_or_create_user(telegram_id: int, username: str | None = None):
         return user
 
 
-async def set_bot_commands():
+async def set_bot_commands(tg_id: int = 0):
     cmds = [
         BotCommand(command="start", description="Start / Referral link"),
         BotCommand(command="help", description="How to use the bot"),
         BotCommand(command="buy", description="Buy a raffle ticket (₦500)"),
         BotCommand(command="ticket", description="View your tickets"),
         BotCommand(command="referrals", description="Your referral count"),
-        BotCommand(command="balance", description="Check your spend & referral earnings")  # ✅ NEW
+        BotCommand(command="balance", description="Check your spend & referral earnings"),
     ]
+
+    # Add admin commands only if the user is admin
+    if tg_id == ADMIN_ID:
+        cmds.append(BotCommand(command="admin", description="Admin commands"))
+
     await bot.set_my_commands(cmds)
+
 
 def generate_ticket_code():
     letter = random.choice(string.ascii_uppercase)
@@ -174,6 +181,8 @@ async def cmd_start(message: Message, command: Command):
             "Tap the button below to join.",
             reply_markup=join_kb
         )
+    
+    
     # ---------------------------------------------------------
     # END CHANNEL CHECK
     # ---------------------------
@@ -235,6 +244,7 @@ async def cmd_start(message: Message, command: Command):
     [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
     [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
     [InlineKeyboardButton(text="💼 Affiliate", callback_data="view_affiliate")],
+    [InlineKeyboardButton(text="📊 Dashboard", callback_data="dashboard")],  
     [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
 ])
 
@@ -251,14 +261,61 @@ async def cmd_start(message: Message, command: Command):
 
 # Same structure for other command handlers and webhook handling...
 
-@dp.callback_query_handler(lambda c: c.data == "check_joined")
-async def check_joined(call: CallbackQuery):
-    if await user_in_channel(call.from_user.id):
-        await call.message.edit_text("✅ You have joined! Please send /start again.")
-    else:
-        await call.answer("❗ You have not joined the channel yet.", show_alert=True)
+@dp.callback_query(Text("check_joined"))
+async def check_joined_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+        if member.status not in ("left", "kicked"):
+            await query.message.edit_text("✅ You have joined the channel! You can proceed.")
+        else:
+            await query.message.edit_text("⚠️ You must join our channel first to use the bot.")
+    except Exception:
+        await query.message.edit_text("⚠️ Please join our channel first to use the bot.")
+
+@dp.callback_query(Text("dashboard"))
+async def dashboard_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == user_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await query.message.answer("🚫 User not found.")
+            return
+
+        # Example dashboard
+        await query.message.answer(
+            f"📊 <b>Your Dashboard</b>\n\n"
+            f"🎟 Tickets: {len(user.tickets)}\n"
+            f"💰 Balance: ₦{user.balance:,}\n"
+            f"👥 Referrals: {user.referral_count}\n"
+        )
 
 
+# ---------------------------
+# CALLBACK HANDLERS
+# ---------------------------
+@dp.callback_query(Text("view_affiliate"))
+async def view_affiliate_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == user_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await query.message.answer("🚫 User not found.")
+            return
+
+        ref_link = f"https://t.me/{(await bot.get_me()).username}?start={user.telegram_id}"
+        await query.message.answer(
+            f"🤝 <b>Your Affiliate Info</b>\n\n"
+            f"Your Code: <code>{user.affiliate_code}</code>\n"
+            f"Referral Link: <code>{ref_link}</code>\n"
+            f"Total Referrals: {user.referral_count}"
+        )
+
+
+        
+# ---------------------------
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -412,52 +469,46 @@ async def cmd_stats(message: Message):
 
 @dp.message(Command("ticket"))
 async def cmd_ticket(message: Message):
-    """Show user's tickets with code + date + summary."""
+    """Show user's tickets with code, type, and purchase date."""
     tg_id = message.from_user.id
-
     async with async_session() as s:
-        # Fetch user
+        # Get the user
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
         user = q.scalar_one_or_none()
-
         if not user:
             await message.answer("🚫 You don't have any tickets yet.")
             return
 
-        # Fetch user's tickets
-        q2 = await s.execute(
-            select(RaffleEntry).where(RaffleEntry.user_id == user.id).order_by(RaffleEntry.id.desc())
-        )
+        # Get user's tickets
+        q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
         tickets = q2.scalars().all()
-
         if not tickets:
-            await message.answer("🚫 You have no tickets yet. Use /buy to get one.")
+            await message.answer("🚫 You have no tickets yet. Use /buy.")
             return
 
-        # Summary calculations
-        total = len(tickets)
+        # Ticket summary
+        total_tickets = len(tickets)
         free_tickets = sum(1 for t in tickets if t.free_ticket)
-        paid_tickets = total - free_tickets
+        paid_tickets = total_tickets - free_tickets
+        total_value = paid_tickets * 500
 
-        # Build ticket list text
+        # Build message
         ticket_lines = []
         for t in tickets:
-            ticket_lines.append(
-                f"🎫 <b>{t.ticket_code}</b> — <i>{t.created_at.strftime('%Y-%m-%d %H:%M')}</i>"
-                f" {'(FREE)' if t.free_ticket else '(PAID)'}"
-            )
+            type_text = "🎁 Free" if t.free_ticket else "💵 Paid"
+            date_text = t.created_at.strftime("%Y-%m-%d %H:%M")
+            ticket_lines.append(f"{t.ticket_code} | {type_text} | {date_text}")
 
-        ticket_block = "\n".join(ticket_lines)
+        ticket_text = "\n".join(ticket_lines)
 
-        # Final message
         await message.answer(
-            "🎟 <b>Your Tickets</b>\n\n"
-            f"{ticket_block}\n\n"
-            "📊 <b>Summary</b>\n"
-            f"• Total Tickets: <b>{total}</b>\n"
-            f"• Paid Tickets: <b>{paid_tickets}</b>\n"
-            f"• Free Tickets: <b>{free_tickets}</b>\n"
+            f"🎟 <b>Your Ticket Summary</b>\n\n"
+            f"🎫 Total Tickets: {total_tickets}\n"
+            f"🎁 Free Tickets: {free_tickets}\n"
+            f"💰 Paid Tickets: {paid_tickets}\n\n"
+            f"<b>📄 Your Tickets:</b>\n{ticket_text}"
         )
+
 
 
 
@@ -644,42 +695,32 @@ async def cmd_affiliate(message: Message):
                 f"💰 Commission Balance: ₦{balance:,.0f}\n\n"
                 f"Earn ₦50 for each successful ticket sale through your link!"
             )
+         
 
 @dp.message(Command("leaderboard"))
-async def cmd_leaderboard(message: Message):
-    """Show the top 10 referrers and most active ticket buyers."""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only the admin can view the leaderboard.")
-        return
-
-    async with async_session() as db:
-        # Get the top 10 referrers
-        referrers = await db.execute(
-            select(User).order_by(User.referral_count.desc()).limit(10)
-        )
-        top_referrers = referrers.scalars().all()
-
-        # Get the most active ticket buyers (by the number of tickets purchased)
-        buyers = await db.execute(
-            select(User)
-            .join(RaffleEntry)
+async def leaderboard_cmd(message: Message):
+    """Show top users by total tickets purchased."""
+    async with async_session() as s:
+        # Fetch top 10 users by number of tickets
+        q = await s.execute(
+            select(User, func.count(RaffleEntry.id).label("tickets_count"))
+            .join(RaffleEntry, RaffleEntry.user_id == User.id)
             .group_by(User.id)
             .order_by(func.count(RaffleEntry.id).desc())
             .limit(10)
         )
-        top_buyers = buyers.scalars().all()
+        top_users = q.all()
 
-        # Format leaderboard message
-        msg_lines = ["🏆 <b>Leaderboard</b>\n"]
-        msg_lines.append("\n<b>Top 10 Referrers:</b>")
-        for i, referrer in enumerate(top_referrers, start=1):
-            msg_lines.append(f"{i}. @{referrer.username} - {referrer.referral_count} Referrals")
+    if not top_users:
+        await message.answer("🚫 No users found for leaderboard.")
+        return
 
-        msg_lines.append("\n<b>Top 10 Active Ticket Buyers:</b>")
-        for i, buyer in enumerate(top_buyers, start=1):
-            msg_lines.append(f"{i}. @{buyer.username} - {buyer.ticket_count} Tickets")
+    text = "🏆 <b>Leaderboard (Top Ticket Holders)</b>\n\n"
+    for i, (user, tickets_count) in enumerate(top_users, 1):
+        text += f"{i}. <b>{user.username or user.telegram_id}</b> — {tickets_count} tickets\n"
 
-        await message.answer("\n".join(msg_lines))
+    await message.answer(text)
+
 
 @dp.message_handler(commands=["sendwinner"])
 async def send_winner(message: types.Message):
@@ -783,25 +824,105 @@ async def view_affiliate_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-# ---------------------------------------------------------
-# Error Handling for Flood Control (v3.x)
-# ---------------------------------------------------------
-async def handle_flood_error():
-    """Handle flood control errors and retry."""
-    try:
-        await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
-    except Exception as e:
-        retry_after = getattr(e, "retry_after", None)
-        if retry_after:
-            logger.warning(f"Rate limit exceeded, retrying in {retry_after}s")
-            await asyncio.sleep(retry_after)
-            try:
-                await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
-            except Exception as e2:
-                logger.warning(f"Failed to resend after wait: {e2}")
-        else:
-            logger.warning(f"Failed to send message due to unexpected error: {e}")
 
+# ------------------------------
+# Live Dashboard
+# ------------------------------
+async def get_dashboard_text(user: User):
+    async with async_session() as s:
+        q = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
+        tickets = q.scalars().all()
+        total_tickets = len(tickets)
+        free_tickets = sum(1 for t in tickets if t.free_ticket)
+        paid_tickets = total_tickets - free_tickets
+        balance_value = free_tickets * 500 - paid_tickets * 500
+        balance_display = abs(balance_value)
+
+        ticket_lines = []
+        for t in tickets:
+            date_str = t.created_at.strftime("%Y-%m-%d %H:%M")
+            free_tag = "🎁" if t.free_ticket else ""
+            ticket_lines.append(f"{free_tag} {t.ticket_code} | {date_str}")
+        ticket_text = "\n".join(ticket_lines) if ticket_lines else "No tickets yet."
+
+        ref_link = f"https://t.me/{(await bot.get_me()).username}?start={user.telegram_id}"
+
+        return (
+            f"🎉 <b>Your Dashboard</b>\n\n"
+            f"🎫 Total Tickets: {total_tickets}\n"
+            f"🎁 Free Tickets: {free_tickets}\n"
+            f"💰 Net Balance: ₦{balance_display:,}\n\n"
+            f"<b>Your Tickets:</b>\n{ticket_text}\n\n"
+            f"👥 Invite friends with your link:\n<code>{ref_link}</code>"
+        )
+
+
+def get_dashboard_keyboard(user_id: int):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+        [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
+        [InlineKeyboardButton(text="💼 Affiliate", callback_data="view_affiliate")],
+        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+    ])
+    if user_id == ADMIN_ID:
+        kb.add(InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin_panel"))
+    return kb
+
+
+@dp.message(Command("dashboard"))
+async def cmd_dashboard(message: Message):
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await message.answer("🚫 You are not registered yet. Use /start first.")
+            return
+
+    text = await get_dashboard_text(user)
+    kb = get_dashboard_keyboard(user.id)
+    sent_msg = await message.answer(text, reply_markup=kb)
+    # Save message ID for updating later
+    user.dashboard_msg_id = sent_msg.message_id
+    async with async_session() as s:
+        s.add(user)
+        await s.commit()
+
+
+# ------------------------------
+# Buy Ticket callback updates dashboard
+# ------------------------------
+@dp.callback_query(lambda c: c.data == "buy_ticket")
+async def callback_buy_ticket(callback: CallbackQuery):
+    tg_id = callback.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await callback.message.answer("🚫 User not found. Use /start first.")
+            await callback.answer()
+            return
+
+        # Create new ticket
+        ticket_code = generate_ticket_code()
+        new_ticket = RaffleEntry(user_id=user.id, ticket_code=ticket_code, free_ticket=False)
+        s.add(new_ticket)
+        await s.commit()
+        await s.refresh(new_ticket)
+
+        # Update the dashboard
+        if hasattr(user, "dashboard_msg_id") and user.dashboard_msg_id:
+            new_text = await get_dashboard_text(user)
+            kb = get_dashboard_keyboard(user.id)
+            try:
+                await callback.message.edit_text(new_text, reply_markup=kb)
+            except Exception:
+                # Fallback if message can't be edited
+                await callback.message.answer(new_text, reply_markup=kb)
+
+        await callback.answer(f"✅ Ticket {ticket_code} purchased!")
+    
+    
         
 
 # ---------------------------------------------------------
