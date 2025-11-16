@@ -21,6 +21,8 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
+from aiogram import Router
+router = Router()
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -48,6 +50,15 @@ REQUIRED_CHANNEL = "@MegaWinRaffle"
 
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN not set in environment")
+
+# --- Routers ---
+user_router = Router()
+callback_router = Router()
+admin_router = Router()
+
+dp.include_router(user_router)
+dp.include_router(callback_router)
+dp.include_router(admin_router)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -164,7 +175,7 @@ async def user_in_channel(user_id: int):
 # ---------------------------------------------------------
 # COMMAND HANDLERS
 # ---------------------------------------------------------
-@dp.message(Command("start"))
+@user_router.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
         # ---------------------------------------------------------
     # 🔥 CHANNEL JOIN CHECK — ADD THIS BLOCK
@@ -261,7 +272,7 @@ async def cmd_start(message: Message, command: Command):
 
 # Same structure for other command handlers and webhook handling...
 
-@dp.callback_query(lambda c: c.data == "check_joined")
+@callback_router.callback_query(F.data == "check_joined")
 async def check_joined_callback(query: CallbackQuery):
     user_id = query.from_user.id
     try:
@@ -273,7 +284,7 @@ async def check_joined_callback(query: CallbackQuery):
     except Exception:
         await query.message.edit_text("⚠️ Please join our channel first to use the bot.")
 
-@dp.callback_query(lambda c: c.data == "dashboard")
+@callback_router.callback_query(F.data == "dashboard")
 async def dashboard_callback(query: CallbackQuery):
     user_id = query.from_user.id
     async with async_session() as s:
@@ -317,7 +328,7 @@ async def view_affiliate_callback(query: CallbackQuery):
         
 # ---------------------------
 
-@dp.message(Command("help"))
+@user_router.message(Command("help"))
 async def cmd_help(message: Message):
     """Show help and available commands."""
     await message.answer(
@@ -336,7 +347,7 @@ async def cmd_help(message: Message):
 
 
 
-@dp.message(Command("buy"))
+@user_router.message(Command("buy"))
 async def cmd_buy(message: Message):
     """Initialize Paystack transaction and apply promo multiplier if active."""
     if not PAYSTACK_SECRET_KEY:
@@ -381,7 +392,7 @@ async def cmd_buy(message: Message):
         await message.answer("❌ Could not start Paystack payment. Please try again.")
 
 
-@dp.message(Command("winners"))
+@admin_router.message(Command("winners"))
 async def cmd_winners(message: Message):
     """Pick a random winner and reset all tickets."""
     if message.from_user.id != ADMIN_ID:
@@ -409,7 +420,7 @@ async def cmd_winners(message: Message):
         await message.answer("🔁 All tickets have been reset for the next round!")
 
 
-@dp.message(Command("userstat"))
+@user_router.message(Command("userstat"))
 async def cmd_userstat(message: Message):
     """Show user's lifetime statistics."""
     tg_id = message.from_user.id
@@ -441,7 +452,7 @@ async def cmd_userstat(message: Message):
 
 
 
-@dp.message(Command("stats"))
+@admin_router.message(Command("stats"))
 async def cmd_stats(message: Message):
     """Admin-only: show summary statistics."""
     if message.from_user.id != ADMIN_ID:
@@ -467,7 +478,7 @@ async def cmd_stats(message: Message):
     )
 
 
-@dp.message(Command("ticket"))
+@user_router.message(Command("ticket"))
 async def cmd_ticket(message: Message):
     """Show user's tickets with code, type, and purchase date."""
     tg_id = message.from_user.id
@@ -513,7 +524,7 @@ async def cmd_ticket(message: Message):
 
 
 
-@dp.message(Command("balance"))
+@admin_router.message(Command("balance"))
 async def cmd_balance(message: Message):
     """Show user's balance summary."""
     telegram_id = message.from_user.id
@@ -542,7 +553,7 @@ async def cmd_balance(message: Message):
                 f"📊 <b>Net Balance:</b> ₦{balance:,}"
             )
 
-@dp.message(Command("promo"))
+@admin_router.message(Command("promo"))
 async def cmd_promo(message: Message):
     """Admin-only: manage timed promo events with broadcast."""
     if message.from_user.id != ADMIN_ID:
@@ -610,7 +621,7 @@ async def broadcast_message(text: str):
 
 
 
-@dp.message(Command("transactions"))
+admin_router.message(Command("transactions"))
 async def cmd_transactions(message: Message):
     """Admin-only: View all transactions, payments, and affiliate commissions."""
     if message.from_user.id != ADMIN_ID:
@@ -652,7 +663,7 @@ async def cmd_transactions(message: Message):
 
 
 
-@dp.message(Command("referrals"))
+@user_router.message(Command("referrals"))
 async def cmd_referrals(message: Message):
     telegram_id = message.from_user.id
     me = await bot.get_me()
@@ -667,7 +678,7 @@ async def cmd_referrals(message: Message):
                 f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}"
             )
 
-@dp.message(Command("affiliate"))
+@user_router.message(Command("affiliate"))
 async def cmd_affiliate(message: Message):
     """Generate affiliate link and show commission balance."""
     tg_id = message.from_user.id
@@ -697,7 +708,7 @@ async def cmd_affiliate(message: Message):
             )
          
 
-@dp.message(Command("leaderboard"))
+@user_router.message(Command("leaderboard"))
 async def leaderboard_cmd(message: Message):
     """Show top users by total tickets purchased."""
     async with async_session() as s:
@@ -722,7 +733,7 @@ async def leaderboard_cmd(message: Message):
     await message.answer(text)
 
 
-@dp.message_handler(commands=["sendwinner"])
+@admin_router.message(commands=["sendwinner"])
 async def send_winner(message: types.Message):
     # Format: /sendwinner <telegram_id> <ticket_code>
     args = message.text.split()
@@ -746,7 +757,7 @@ async def send_winner(message: types.Message):
     except Exception as e:
         await message.reply(f"Failed to send winner message:\n{e}")
 
-@dp.message_handler(commands=["losers"])
+@admin_router.message(commands=["losers"])
 async def send_loser_messages(message: types.Message):
     # Must run AFTER the winner is decided
     session = SessionLocal()
@@ -791,7 +802,7 @@ async def send_loser_messages(message: types.Message):
 
     await message.reply(text_output, parse_mode="Markdown")
 
-@dp.callback_query(lambda c: c.data == "view_affiliate")
+@user_router.callback_query(F.data == "view_affiliate")
 async def view_affiliate_handler(callback: CallbackQuery):
     tg_id = callback.from_user.id
 
@@ -869,7 +880,7 @@ def get_dashboard_keyboard(user_id: int):
     return kb
 
 
-@dp.message(Command("dashboard"))
+@user_router.message(Command("dashboard"))
 async def cmd_dashboard(message: Message):
     tg_id = message.from_user.id
     async with async_session() as s:
@@ -892,7 +903,7 @@ async def cmd_dashboard(message: Message):
 # ------------------------------
 # Buy Ticket callback updates dashboard
 # ------------------------------
-@dp.callback_query(lambda c: c.data == "buy_ticket")
+@user_router.callback_query(F.data == "buy_ticket")
 async def callback_buy_ticket(callback: CallbackQuery):
     tg_id = callback.from_user.id
     async with async_session() as s:
@@ -1035,27 +1046,27 @@ async def send_message(background_tasks: BackgroundTasks):
 # ---------------------------------------------------------
 # CALLBACKS
 # ---------------------------------------------------------
-@dp.callback_query(lambda c: c.data == "buy_ticket")
+user_router.callback_query(F.data == "buy_ticket")
 async def cb_buy(callback: CallbackQuery):
     await cmd_buy(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "view_tickets")
+@user_router.callback_query(F.data == "view_tickets")
 async def cb_tickets(callback: CallbackQuery):
     await cmd_ticket(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "my_referrals")
+@user_router.callback_query(F.data == "my_referrals")
 async def cb_ref(callback: CallbackQuery):
     await cmd_referrals(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "help_cmd")
+@user_router.callback_query(F.data == "help_cmd")
 async def cb_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "view_balance")
+@user_router.callback_query(F.data == "view_balance")
 async def cb_balance(callback: CallbackQuery):
     await cmd_balance(callback.message)
     await callback.answer()
@@ -1441,7 +1452,8 @@ async def daily_countdown_task(stop_event: asyncio.Event):
 # separate lifespan here to avoid referencing undefined names.
 
 
-
+# Register the router with the dispatcher
+dp.include_router(router)
 # ---------------------------------------------------------
 # ENTRY POINT
 # ---------------------------------------------------------
