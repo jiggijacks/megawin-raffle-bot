@@ -1,6 +1,7 @@
 import os
 import logging
 import random
+from tokenize import String
 import aiohttp
 import uvicorn
 import sys
@@ -18,7 +19,14 @@ from fastapi.responses import HTMLResponse
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
+from routers.user_router import router as user_router
+from routers.admin_router import router as admin_router
+from routers.ticket_router import router as ticket_router
+from app.models import User, RaffleEntry
+from aiogram import Router
+router = Router()
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -41,9 +49,20 @@ PORT = int(os.getenv("PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", "https://megawinraffle.up.railway.app")
 TELEGRAM_WEBHOOK_PATH = "/webhook/telegram"
 PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
+REQUIRED_CHANNEL = "@MegaWinRaffle"
+
 
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN not set in environment")
+
+# --- Routers ---
+user_router = Router()
+callback_router = Router()
+admin_router = Router()
+
+dp.include_router(user_router)
+dp.include_router(callback_router)
+dp.include_router(admin_router)
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -127,27 +146,61 @@ async def get_or_create_user(telegram_id: int, username: str | None = None):
         return user
 
 
-async def set_bot_commands():
+async def set_bot_commands(tg_id: int = 0):
     cmds = [
         BotCommand(command="start", description="Start / Referral link"),
         BotCommand(command="help", description="How to use the bot"),
         BotCommand(command="buy", description="Buy a raffle ticket (₦500)"),
         BotCommand(command="ticket", description="View your tickets"),
         BotCommand(command="referrals", description="Your referral count"),
-        BotCommand(command="balance", description="Check your spend & referral earnings")  # ✅ NEW
+        BotCommand(command="balance", description="Check your spend & referral earnings"),
     ]
+
+    # Add admin commands only if the user is admin
+    if tg_id == ADMIN_ID:
+        cmds.append(BotCommand(command="admin", description="Admin commands"))
+
     await bot.set_my_commands(cmds)
+
 
 def generate_ticket_code():
     letter = random.choice(string.ascii_uppercase)
     number = random.randint(100, 999)
     return f"#{letter}{number}"
 
+async def user_in_channel(user_id: int):
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except:
+        return False
+
+
 # ---------------------------------------------------------
 # COMMAND HANDLERS
 # ---------------------------------------------------------
-@dp.message(Command("start"))
+@user_router.message(Command("start"))
 async def cmd_start(message: Message, command: Command):
+        # ---------------------------------------------------------
+    # 🔥 CHANNEL JOIN CHECK — ADD THIS BLOCK
+    # ---------------------------------------------------------
+    if not await user_in_channel(message.from_user.id):
+        join_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Join Channel", url="https://t.me/MegaWinRaffle")],
+            [InlineKeyboardButton(text="✅ I Joined", callback_data="check_joined")]
+        ])
+
+        return await message.answer(
+            "❗ <b>You must join our channel to continue!</b>\n"
+            "👉 <b>@MegaWinRaffle</b>\n\n"
+            "Tap the button below to join.",
+            reply_markup=join_kb
+        )
+    
+    
+    # ---------------------------------------------------------
+    # END CHANNEL CHECK
+    # ---------------------------
     tg_id = message.from_user.id
     username = message.from_user.username
     user = await get_or_create_user(tg_id, username)
@@ -206,6 +259,7 @@ async def cmd_start(message: Message, command: Command):
     [InlineKeyboardButton(text="💰 My Balance", callback_data="view_balance")],
     [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
     [InlineKeyboardButton(text="💼 Affiliate", callback_data="view_affiliate")],
+    [InlineKeyboardButton(text="📊 Dashboard", callback_data="dashboard")],  
     [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
 ])
 
@@ -222,9 +276,63 @@ async def cmd_start(message: Message, command: Command):
 
 # Same structure for other command handlers and webhook handling...
 
+@callback_router.callback_query(F.data == "check_joined")
+async def check_joined_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+        if member.status not in ("left", "kicked"):
+            await query.message.edit_text("✅ You have joined the channel! You can proceed.")
+        else:
+            await query.message.edit_text("⚠️ You must join our channel first to use the bot.")
+    except Exception:
+        await query.message.edit_text("⚠️ Please join our channel first to use the bot.")
+
+@callback_router.callback_query(F.data == "dashboard")
+async def dashboard_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == user_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await query.message.answer("🚫 User not found.")
+            return
+
+        # Example dashboard
+        await query.message.answer(
+            f"📊 <b>Your Dashboard</b>\n\n"
+            f"🎟 Tickets: {len(user.tickets)}\n"
+            f"💰 Balance: ₦{user.balance:,}\n"
+            f"👥 Referrals: {user.referral_count}\n"
+        )
 
 
-@dp.message(Command("help"))
+# ---------------------------
+# CALLBACK HANDLERS
+# ---------------------------
+@dp.callback_query(lambda c: c.data == "view_affiliate")
+async def view_affiliate_callback(query: CallbackQuery):
+    user_id = query.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == user_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await query.message.answer("🚫 User not found.")
+            return
+
+        ref_link = f"https://t.me/{(await bot.get_me()).username}?start={user.telegram_id}"
+        await query.message.answer(
+            f"🤝 <b>Your Affiliate Info</b>\n\n"
+            f"Your Code: <code>{user.affiliate_code}</code>\n"
+            f"Referral Link: <code>{ref_link}</code>\n"
+            f"Total Referrals: {user.referral_count}"
+        )
+
+
+        
+# ---------------------------
+
+@user_router.message(Command("help"))
 async def cmd_help(message: Message):
     """Show help and available commands."""
     await message.answer(
@@ -243,7 +351,7 @@ async def cmd_help(message: Message):
 
 
 
-@dp.message(Command("buy"))
+@user_router.message(Command("buy"))
 async def cmd_buy(message: Message):
     """Initialize Paystack transaction and apply promo multiplier if active."""
     if not PAYSTACK_SECRET_KEY:
@@ -288,7 +396,7 @@ async def cmd_buy(message: Message):
         await message.answer("❌ Could not start Paystack payment. Please try again.")
 
 
-@dp.message(Command("winners"))
+@admin_router.message(Command("winners"))
 async def cmd_winners(message: Message):
     """Pick a random winner and reset all tickets."""
     if message.from_user.id != ADMIN_ID:
@@ -316,7 +424,7 @@ async def cmd_winners(message: Message):
         await message.answer("🔁 All tickets have been reset for the next round!")
 
 
-@dp.message(Command("userstat"))
+@user_router.message(Command("userstat"))
 async def cmd_userstat(message: Message):
     """Show user's lifetime statistics."""
     tg_id = message.from_user.id
@@ -348,7 +456,7 @@ async def cmd_userstat(message: Message):
 
 
 
-@dp.message(Command("stats"))
+@admin_router.message(Command("stats"))
 async def cmd_stats(message: Message):
     """Admin-only: show summary statistics."""
     if message.from_user.id != ADMIN_ID:
@@ -374,40 +482,53 @@ async def cmd_stats(message: Message):
     )
 
 
-@dp.message(Command("ticket"))
+@user_router.message(Command("ticket"))
 async def cmd_ticket(message: Message):
-    """Show user's tickets and summary with clean layout."""
+    """Show user's tickets with code, type, and purchase date."""
     tg_id = message.from_user.id
     async with async_session() as s:
+        # Get the user
         q = await s.execute(select(User).where(User.telegram_id == tg_id))
         user = q.scalar_one_or_none()
         if not user:
             await message.answer("🚫 You don't have any tickets yet.")
             return
 
+        # Get user's tickets
         q2 = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
         tickets = q2.scalars().all()
         if not tickets:
             await message.answer("🚫 You have no tickets yet. Use /buy.")
             return
 
+        # Ticket summary
         total_tickets = len(tickets)
         free_tickets = sum(1 for t in tickets if t.free_ticket)
         paid_tickets = total_tickets - free_tickets
         total_value = paid_tickets * 500
-        balance_value = free_tickets * 500 - paid_tickets * 500
-        balance_display = abs(balance_value)
+
+        # Build message
+        ticket_lines = []
+        for t in tickets:
+            type_text = "🎁 Free" if t.free_ticket else "💵 Paid"
+            date_text = t.created_at.strftime("%Y-%m-%d %H:%M")
+            ticket_lines.append(f"{t.ticket_code} | {type_text} | {date_text}")
+
+        ticket_text = "\n".join(ticket_lines)
 
         await message.answer(
             f"🎟 <b>Your Ticket Summary</b>\n\n"
-            f"🎫 Available Tickets: {total_tickets}\n"
+            f"🎫 Total Tickets: {total_tickets}\n"
             f"🎁 Free Tickets: {free_tickets}\n"
-            f"💰 Net Balance: ₦{balance_display:,}"
+            f"💰 Paid Tickets: {paid_tickets}\n\n"
+            f"<b>📄 Your Tickets:</b>\n{ticket_text}"
         )
 
 
 
-@dp.message(Command("balance"))
+
+
+@admin_router.message(Command("balance"))
 async def cmd_balance(message: Message):
     """Show user's balance summary."""
     telegram_id = message.from_user.id
@@ -436,7 +557,7 @@ async def cmd_balance(message: Message):
                 f"📊 <b>Net Balance:</b> ₦{balance:,}"
             )
 
-@dp.message(Command("promo"))
+@admin_router.message(Command("promo"))
 async def cmd_promo(message: Message):
     """Admin-only: manage timed promo events with broadcast."""
     if message.from_user.id != ADMIN_ID:
@@ -504,7 +625,7 @@ async def broadcast_message(text: str):
 
 
 
-@dp.message(Command("transactions"))
+admin_router.message(Command("transactions"))
 async def cmd_transactions(message: Message):
     """Admin-only: View all transactions, payments, and affiliate commissions."""
     if message.from_user.id != ADMIN_ID:
@@ -546,7 +667,7 @@ async def cmd_transactions(message: Message):
 
 
 
-@dp.message(Command("referrals"))
+@user_router.message(Command("referrals"))
 async def cmd_referrals(message: Message):
     telegram_id = message.from_user.id
     me = await bot.get_me()
@@ -561,7 +682,7 @@ async def cmd_referrals(message: Message):
                 f"👥 You have referred {count} user(s).\n\nYour referral link:\n{link}"
             )
 
-@dp.message(Command("affiliate"))
+@user_router.message(Command("affiliate"))
 async def cmd_affiliate(message: Message):
     """Generate affiliate link and show commission balance."""
     tg_id = message.from_user.id
@@ -589,62 +710,234 @@ async def cmd_affiliate(message: Message):
                 f"💰 Commission Balance: ₦{balance:,.0f}\n\n"
                 f"Earn ₦50 for each successful ticket sale through your link!"
             )
+         
 
-@dp.message(Command("leaderboard"))
-async def cmd_leaderboard(message: Message):
-    """Show the top 10 referrers and most active ticket buyers."""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("🚫 Only the admin can view the leaderboard.")
-        return
-
-    async with async_session() as db:
-        # Get the top 10 referrers
-        referrers = await db.execute(
-            select(User).order_by(User.referral_count.desc()).limit(10)
-        )
-        top_referrers = referrers.scalars().all()
-
-        # Get the most active ticket buyers (by the number of tickets purchased)
-        buyers = await db.execute(
-            select(User)
-            .join(RaffleEntry)
+@user_router.message(Command("leaderboard"))
+async def leaderboard_cmd(message: Message):
+    """Show top users by total tickets purchased."""
+    async with async_session() as s:
+        # Fetch top 10 users by number of tickets
+        q = await s.execute(
+            select(User, func.count(RaffleEntry.id).label("tickets_count"))
+            .join(RaffleEntry, RaffleEntry.user_id == User.id)
             .group_by(User.id)
             .order_by(func.count(RaffleEntry.id).desc())
             .limit(10)
         )
-        top_buyers = buyers.scalars().all()
+        top_users = q.all()
 
-        # Format leaderboard message
-        msg_lines = ["🏆 <b>Leaderboard</b>\n"]
-        msg_lines.append("\n<b>Top 10 Referrers:</b>")
-        for i, referrer in enumerate(top_referrers, start=1):
-            msg_lines.append(f"{i}. @{referrer.username} - {referrer.referral_count} Referrals")
+    if not top_users:
+        await message.answer("🚫 No users found for leaderboard.")
+        return
 
-        msg_lines.append("\n<b>Top 10 Active Ticket Buyers:</b>")
-        for i, buyer in enumerate(top_buyers, start=1):
-            msg_lines.append(f"{i}. @{buyer.username} - {buyer.ticket_count} Tickets")
+    text = "🏆 <b>Leaderboard (Top Ticket Holders)</b>\n\n"
+    for i, (user, tickets_count) in enumerate(top_users, 1):
+        text += f"{i}. <b>{user.username or user.telegram_id}</b> — {tickets_count} tickets\n"
 
-        await message.answer("\n".join(msg_lines))
+    await message.answer(text)
 
-# ---------------------------------------------------------
-# Error Handling for Flood Control (v3.x)
-# ---------------------------------------------------------
-async def handle_flood_error():
-    """Handle flood control errors and retry."""
+
+@admin_router.message(commands=["sendwinner"])
+async def send_winner(message: types.Message):
+    # Format: /sendwinner <telegram_id> <ticket_code>
+    args = message.text.split()
+
+    if len(args) != 3:
+        return await message.reply("Usage:\n/sendwinner <telegram_id> <ticket_code>")
+
+    telegram_id = args[1]
+    ticket_code = args[2]
+
+    winner_msg = (
+        f"🎉 *CONGRATULATIONS! YOU ARE THE WINNER!*\n\n"
+        f"🏆 Winning Ticket: *{ticket_code}*\n"
+        f"💰 Prize: ₦10,000 MegaWin Reward!\n\n"
+        f"Our team will contact you shortly. 🔥"
+    )
+
     try:
-        await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
+        await bot.send_message(telegram_id, winner_msg, parse_mode="Markdown")
+        await message.reply("Winner message sent successfully!")
     except Exception as e:
-        retry_after = getattr(e, "retry_after", None)
-        if retry_after:
-            logger.warning(f"Rate limit exceeded, retrying in {retry_after}s")
-            await asyncio.sleep(retry_after)
-            try:
-                await bot.send_message(chat_id=ADMIN_ID, text="Testing flood control!")
-            except Exception as e2:
-                logger.warning(f"Failed to resend after wait: {e2}")
-        else:
-            logger.warning(f"Failed to send message due to unexpected error: {e}")
+        await message.reply(f"Failed to send winner message:\n{e}")
 
+@admin_router.message(commands=["losers"])
+async def send_loser_messages(message: types.Message):
+    # Must run AFTER the winner is decided
+    session = SessionLocal()
+
+    # 1. Get winner entry
+    winner = session.query(RaffleEntry).filter(RaffleEntry.is_winner == True).first()
+
+    if not winner:
+        session.close()
+        return await message.reply("❗ No winner selected yet.")
+
+    winner_user_id = winner.user_id
+
+    # 2. Get all participants EXCEPT the winner
+    losers = session.query(RaffleEntry).filter(
+        RaffleEntry.user_id != winner_user_id
+    ).all()
+
+    if not losers:
+        session.close()
+        return await message.reply("No losers found (only one participant).")
+
+    loser_msg_template = (
+        "😔 *Raffle Result*\n\n"
+        "Thank you for participating in this week’s MegaWin Raffle!\n\n"
+        "Unfortunately, you didn’t win this round… but don’t worry!\n"
+        "Another raffle starts soon, and your luck might shine next time. 🍀\n\n"
+        "Stay tuned and keep playing! 🚀🔥"
+    )
+
+    # 3. Generate message list for admin to copy
+    text_output = "📨 *Loser Broadcast List*\n\nCopy and send these messages:\n"
+
+    unique_users = set()
+
+    for entry in losers:
+        if entry.telegram_id not in unique_users:
+            unique_users.add(entry.telegram_id)
+            text_output += f"\n---\nTo: `{entry.telegram_id}`\n\n{loser_msg_template}\n"
+
+    session.close()
+
+    await message.reply(text_output, parse_mode="Markdown")
+
+@user_router.callback_query(F.data == "view_affiliate")
+async def view_affiliate_handler(callback: CallbackQuery):
+    tg_id = callback.from_user.id
+
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+
+    if not user:
+        await callback.answer("User not found.", show_alert=True)
+        return
+
+    # Generate their affiliate link
+    affiliate_code = user.affiliate_code
+    if not affiliate_code:
+        affiliate_code = f"aff{tg_id}"
+        user.affiliate_code = affiliate_code
+        async with async_session() as s:
+            async with s.begin():
+                s.add(user)
+                await s.commit()
+
+    aff_link = f"https://t.me/{(await bot.get_me()).username}?start={affiliate_code}"
+
+    await callback.message.answer(
+        f"💼 <b>Your Affiliate Dashboard</b>\n\n"
+        f"🪪 <b>Affiliate Code:</b> <code>{affiliate_code}</code>\n"
+        f"🔗 <b>Your Affiliate Link:</b>\n<code>{aff_link}</code>\n\n"
+        f"📌 Share this link and earn commissions!",
+    )
+    await callback.answer()
+
+
+
+# ------------------------------
+# Live Dashboard
+# ------------------------------
+async def get_dashboard_text(user: User):
+    async with async_session() as s:
+        q = await s.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id))
+        tickets = q.scalars().all()
+        total_tickets = len(tickets)
+        free_tickets = sum(1 for t in tickets if t.free_ticket)
+        paid_tickets = total_tickets - free_tickets
+        balance_value = free_tickets * 500 - paid_tickets * 500
+        balance_display = abs(balance_value)
+
+        ticket_lines = []
+        for t in tickets:
+            date_str = t.created_at.strftime("%Y-%m-%d %H:%M")
+            free_tag = "🎁" if t.free_ticket else ""
+            ticket_lines.append(f"{free_tag} {t.ticket_code} | {date_str}")
+        ticket_text = "\n".join(ticket_lines) if ticket_lines else "No tickets yet."
+
+        ref_link = f"https://t.me/{(await bot.get_me()).username}?start={user.telegram_id}"
+
+        return (
+            f"🎉 <b>Your Dashboard</b>\n\n"
+            f"🎫 Total Tickets: {total_tickets}\n"
+            f"🎁 Free Tickets: {free_tickets}\n"
+            f"💰 Net Balance: ₦{balance_display:,}\n\n"
+            f"<b>Your Tickets:</b>\n{ticket_text}\n\n"
+            f"👥 Invite friends with your link:\n<code>{ref_link}</code>"
+        )
+
+
+def get_dashboard_keyboard(user_id: int):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 Buy Ticket", callback_data="buy_ticket")],
+        [InlineKeyboardButton(text="👥 Referrals", callback_data="my_referrals")],
+        [InlineKeyboardButton(text="💼 Affiliate", callback_data="view_affiliate")],
+        [InlineKeyboardButton(text="❓ Help", callback_data="help_cmd")],
+    ])
+    if user_id == ADMIN_ID:
+        kb.add(InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin_panel"))
+    return kb
+
+
+@user_router.message(Command("dashboard"))
+async def cmd_dashboard(message: Message):
+    tg_id = message.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await message.answer("🚫 You are not registered yet. Use /start first.")
+            return
+
+    text = await get_dashboard_text(user)
+    kb = get_dashboard_keyboard(user.id)
+    sent_msg = await message.answer(text, reply_markup=kb)
+    # Save message ID for updating later
+    user.dashboard_msg_id = sent_msg.message_id
+    async with async_session() as s:
+        s.add(user)
+        await s.commit()
+
+
+# ------------------------------
+# Buy Ticket callback updates dashboard
+# ------------------------------
+@user_router.callback_query(F.data == "buy_ticket")
+async def callback_buy_ticket(callback: CallbackQuery):
+    tg_id = callback.from_user.id
+    async with async_session() as s:
+        q = await s.execute(select(User).where(User.telegram_id == tg_id))
+        user = q.scalar_one_or_none()
+        if not user:
+            await callback.message.answer("🚫 User not found. Use /start first.")
+            await callback.answer()
+            return
+
+        # Create new ticket
+        ticket_code = generate_ticket_code()
+        new_ticket = RaffleEntry(user_id=user.id, ticket_code=ticket_code, free_ticket=False)
+        s.add(new_ticket)
+        await s.commit()
+        await s.refresh(new_ticket)
+
+        # Update the dashboard
+        if hasattr(user, "dashboard_msg_id") and user.dashboard_msg_id:
+            new_text = await get_dashboard_text(user)
+            kb = get_dashboard_keyboard(user.id)
+            try:
+                await callback.message.edit_text(new_text, reply_markup=kb)
+            except Exception:
+                # Fallback if message can't be edited
+                await callback.message.answer(new_text, reply_markup=kb)
+
+        await callback.answer(f"✅ Ticket {ticket_code} purchased!")
+    
+    
         
 
 # ---------------------------------------------------------
@@ -757,27 +1050,27 @@ async def send_message(background_tasks: BackgroundTasks):
 # ---------------------------------------------------------
 # CALLBACKS
 # ---------------------------------------------------------
-@dp.callback_query(lambda c: c.data == "buy_ticket")
+user_router.callback_query(F.data == "buy_ticket")
 async def cb_buy(callback: CallbackQuery):
     await cmd_buy(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "view_tickets")
+@user_router.callback_query(F.data == "view_tickets")
 async def cb_tickets(callback: CallbackQuery):
     await cmd_ticket(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "my_referrals")
+@user_router.callback_query(F.data == "my_referrals")
 async def cb_ref(callback: CallbackQuery):
     await cmd_referrals(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "help_cmd")
+@user_router.callback_query(F.data == "help_cmd")
 async def cb_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-@dp.callback_query(lambda c: c.data == "view_balance")
+@user_router.callback_query(F.data == "view_balance")
 async def cb_balance(callback: CallbackQuery):
     await cmd_balance(callback.message)
     await callback.answer()
@@ -869,11 +1162,14 @@ async def paystack_webhook(request: Request):
 
                 # Add tickets
                 for _ in range(ticket_count):
-                    db.add(RaffleEntry(
-                        user_id=user.id,
-                        payment_ref=ref,
-                        free_ticket=False
-                    ))
+                   entry = RaffleEntry(
+                    user_id=user.id,
+                    amount=amount,
+                    payment_reference=reference,
+                    telegram_id=user.telegram_id,
+                    ticket_code=generate_ticket_code()   # NEW PART
+                )
+                    
 
                 # -------------------------------
                 # 🔥 REFERRAL REWARD (ONLY FOR PAID USERS)
@@ -1160,7 +1456,10 @@ async def daily_countdown_task(stop_event: asyncio.Event):
 # separate lifespan here to avoid referencing undefined names.
 
 
-
+# Register the router with the dispatcher
+dp.include_router(user_router)
+dp.include_router(admin_router)
+dp.include_router(ticket_router)
 # ---------------------------------------------------------
 # ENTRY POINT
 # ---------------------------------------------------------
@@ -1168,3 +1467,4 @@ if __name__ == "__main__":
     # Run Uvicorn by import string to avoid issues with objects created at import time
     # (for example when using auto-reload or certain event-loop interactions).
     uvicorn.run("app.bot:app", host="0.0.0.0", port=PORT, log_level="info")
+asyncio.run(dp.start_polling(bot))
