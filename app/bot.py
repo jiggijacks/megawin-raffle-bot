@@ -43,7 +43,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-RAILWAY_DOMAIN = "https://megawinraffle.up.railway.app"
+RAILWAY_DOMAIN = "https://megawin-raffle-bot-production.up.railway.app"
 TELEGRAM_WEBHOOK_PATH = "/webhook/telegram"
 PAYSTACK_WEBHOOK_PATH = "/webhook/paystack"
 
