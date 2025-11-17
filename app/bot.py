@@ -8,6 +8,12 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+app = FastAPI()
+
+@app.get("/")
+async def home():
+    return {"status": "ok", "message": "MegaWin bot server running"}
+
 from fastapi.responses import HTMLResponse
 
 from aiogram import Bot, Dispatcher, F
@@ -69,10 +75,9 @@ bot = Bot(
 )
 
 dp = Dispatcher()
-app = FastAPI()
-@app.get("/")
-async def home():
-    return {"status": "ok", "message": "MegaWin bot server running"}
+
+# ==================================
+
 # ==================================
 # HELPERS & UTILITY FUNCTIONS
 # ==================================
@@ -869,21 +874,19 @@ async def on_shutdown():
 
 @app.post(TELEGRAM_WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
+    try:
+        data = await request.json()
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"WEBHOOK ERROR: {e}")
+        return {"error": str(e)}
+
 
 
 # ==================================
 # ENTRYPOINT — FOR RAILWAY
 # ==================================
 
-def start():
-    import uvicorn
-    uvicorn.run(
-        "app.bot:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8080")),
-        log_level="info"
-    )
+
