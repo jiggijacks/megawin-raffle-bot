@@ -1,7 +1,2 @@
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.get("/")
-async def root():
-    return {"message": "Raffle bot API is running"}
+# This file is disabled because FastAPI app is in bot.py
+# The webserver.py file is kept for reference or future use.

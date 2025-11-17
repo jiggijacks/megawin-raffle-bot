@@ -8,12 +8,6 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-app = FastAPI()
-
-@app.get("/")
-async def home():
-    return {"status": "ok", "message": "MegaWin bot server running"}
-
 from fastapi.responses import HTMLResponse
 
 from aiogram import Bot, Dispatcher, F
@@ -33,6 +27,12 @@ from sqlalchemy import select, func
 # Database
 from app.database import async_session, init_db, User, RaffleEntry
 
+# 📌 Create FastAPI APP HERE — FIRST!!
+app = FastAPI()
+
+@app.get("/")
+async def home():
+    return {"status": "ok", "message": "MegaWin bot server running"}
 
 # ==================================
 # LOAD ENVIRONMENT VARIABLES
@@ -888,5 +888,4 @@ async def telegram_webhook(request: Request):
 # ==================================
 # ENTRYPOINT — FOR RAILWAY
 # ==================================
-
 
