@@ -1,8 +1,7 @@
 aiogram==3.5.0
-fastapi
-uvicorn
-python-dotenv
-aiohttp
-sqlalchemy
-alembic
-aiosqlite
+aiohttp==3.9.0
+fastapi==0.70.0
+uvicorn==0.15.0
+sqlalchemy==1.4.25
+python-dotenv==0.19.2
+
