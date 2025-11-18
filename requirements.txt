@@ -1,6 +1,7 @@
 aiogram==3.5.0
 fastapi==0.95.0
-pydantic==2.4.1  
+pydantic==2.4.1  # or any compatible version for aiogram
 uvicorn==0.21.0
 sqlalchemy==2.0.0
 aiohttp==3.8.1
+python-dotenv==1.0.0
