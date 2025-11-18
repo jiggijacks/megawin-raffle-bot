@@ -1,16 +1,6 @@
-# Ignore virtual environment
 .venv/
-
-# Ignore Python cache
 __pycache__/
 *.pyc
-
-# Ignore local SQLite DB
-*.sqlite3
-*.db
-
-# Ignore environment files
+*.pyo
+*.pyd
 .env
-
-# Ignore logs
-*.log
