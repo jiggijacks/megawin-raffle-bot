@@ -1,0 +1,7 @@
+services:
+  - type: worker
+    name: telegram-raffle-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python -m app.bot"
+    plan: free
