@@ -1,15 +1,19 @@
 import os
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram import Bot, Dispatcher, Router, types
 from aiogram.filters import Command
-from app.database import async_session, User, RaffleEntry
-from sqlalchemy import select, insert
+from aiogram.types import Message
+from aiogram.enums import ParseMode
+
+from app.database import async_session, User
 from app.paystack import create_paystack_payment
-from app.webhooks import connect_bot
+from app.utils import generate_reference
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 router = Router()
+dp.include_router(router)
 
 
 # --------------------------
