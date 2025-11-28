@@ -9,6 +9,13 @@ from sqlalchemy import select
 
 router = APIRouter()
 
+async def connect_bot(bot):
+    """
+    Dummy webhook connector so bot.py can import it without error.
+    For polling-based bots, we don’t actually use webhooks.
+    """
+    return True
+
 
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
