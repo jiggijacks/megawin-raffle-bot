@@ -1,5 +1,5 @@
 import os
-from aiogram import Bot, Dispatcher, Router, types
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.enums import ParseMode
@@ -7,6 +7,7 @@ from aiogram.enums import ParseMode
 from app.database import async_session, User
 from app.paystack import create_paystack_payment
 from app.utils import generate_reference
+
 
 TOKEN = os.getenv("BOT_TOKEN")
 
