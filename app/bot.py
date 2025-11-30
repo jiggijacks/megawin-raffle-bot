@@ -3,10 +3,12 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from sqlalchemy import select, insert
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from app.database import RaffleEntry
 
 from app.database import async_session, User
 from app.paystack import create_paystack_payment
-from app.utils import generate_reference
 
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -99,10 +101,17 @@ async def buy(cb):
 
 
 # EXPORT DISPATCHER
-def build_bot():
-    bot = Bot(BOT_TOKEN)
-    dp = Dispatcher()
-    dp.include_router(router)
+def connect_bot(token: str | None = None, dispatcher: Dispatcher | None = None):
+    """
+    Create and return a Bot and Dispatcher configured with the module router.
+    If token or dispatcher are provided they will be used; otherwise the module
+    TOKEN and a new Dispatcher are used.
+    """
+    tok = token or TOKEN
+    bot_instance = Bot(token=tok, parse_mode=ParseMode.HTML)
+    dp_instance = dispatcher or Dispatcher()
+    dp_instance.include_router(router)
+    return bot_instance, dp_instance
 
     connect_bot(bot, dp)  # connect dispatcher to webhook handler
     return bot, dp
