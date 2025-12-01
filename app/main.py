@@ -8,7 +8,10 @@ from app.bot import bot, dp
 app = FastAPI()
 
 # Include routers
+print("🚀 Loading webhooks router...")
 app.include_router(webhooks_router)
+print("✅ Router loaded!")
+
 
 # CORS
 app.add_middleware(
@@ -40,3 +43,5 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     await bot.delete_webhook()
+
+
