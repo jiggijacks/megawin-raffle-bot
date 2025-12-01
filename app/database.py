@@ -61,16 +61,12 @@ class Ticket(Base):
 
 
 async def get_db():
-    """
-    Dependency-like async generator for FastAPI
-    Used by paystack.py to access database session.
-    """
     async with async_session() as session:
-        yield session
         try:
             yield session
         finally:
             await session.close()
+
 
 
 # ======================================================
