@@ -3,16 +3,12 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.bot import bot, dp
+from app.bot import bot, dp              # ← now importing both bot and dp
 from app.webhooks import router
 
 app = FastAPI()
-app.state.bot = bot     # <-- REQUIRED
-app.state.dp = dp       # <-- REQUIRED
-
-app.include_router(router)
-
-
+# Include webhook routes
+app.include_router(webhooks_router)
 
 # CORS (optional)
 app.add_middleware(
@@ -23,6 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
 # Webhook URL for Telegram
 WEBHOOK_URL = os.getenv(
     "WEBHOOK_URL",
@@ -32,7 +30,11 @@ WEBHOOK_URL = os.getenv(
 
 @app.on_event("startup")
 async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
+    app.state.bot = bot            # <<< REQUIRED
+    app.state.dp = dp              # <<< Recommended
+
+    if USE_WEBHOOK:
+        await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
 
 
 @app.on_event("shutdown")
