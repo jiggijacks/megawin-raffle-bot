@@ -6,10 +6,13 @@ router = APIRouter()
 
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    bot: Bot = request.app.state.bot     # now this exists
-    dp = request.app.state.dp            # now this exists
+    print("🔥🔥🔥 WEBHOOK HIT!")     # <--- ADD THIS
+    bot: Bot = request.app.state.bot
+    dp = request.app.state.dp
 
     data = await request.json()
+    print("📩 Incoming update:", data)   # <--- ADD THIS
+
     update = Update.model_validate(data)
 
     await dp.feed_update(bot, update)
