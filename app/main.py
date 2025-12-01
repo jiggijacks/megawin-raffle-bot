@@ -1,5 +1,5 @@
 import os
-
+from app.routers.webhooks import router as webhooks_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
