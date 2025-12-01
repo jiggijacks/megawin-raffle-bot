@@ -3,14 +3,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers.webhooks import router as webhooks_router
-from app.bot import bot, dp              # import bot & dp from your bot module
+from app.bot import bot, dp
 
 app = FastAPI()
 
-# Include webhook routes
+# Include routers
 app.include_router(webhooks_router)
 
-# CORS (optional)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,24 +19,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
 # Webhook URL
 TELEGRAM_WEBHOOK_URL = os.getenv(
     "WEBHOOK_URL",
     "https://disciplined-expression-telegram-bot.up.railway.app/webhook/telegram",
 )
 
-USE_WEBHOOK = True   # <— Set depending on your setup
+USE_WEBHOOK = True  # set to True for Railway
 
 
 @app.on_event("startup")
 async def on_startup():
-    app.state.bot = bot            # <<< REQUIRED
-    app.state.dp = dp              # <<< Recommended
+    app.state.bot = bot
+    app.state.dp = dp
 
     if USE_WEBHOOK:
-        await bot.set_webhook(WEBHOOK_URL)
+        await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
 
 
 @app.on_event("shutdown")
