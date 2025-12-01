@@ -30,6 +30,11 @@ TELEGRAM_WEBHOOK_URL = os.getenv(
 
 USE_WEBHOOK = True  # set to True for Railway
 
+# AUTO-RESET DB IF SCHEMA CHANGED
+if os.path.exists("test.db"):
+    print("🔥 Removing old DB (schema outdated)")
+    os.remove("test.db")
+
 
 @app.on_event("startup")
 async def on_startup():
