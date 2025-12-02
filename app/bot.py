@@ -1,13 +1,12 @@
 import os
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
-from sqlalchemy import select, insert
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from app.database import RaffleEntry
-from app.database import async_session, User
+from sqlalchemy import select, insert
+
+from app.database import async_session, User, RaffleEntry
 from app.paystack import create_paystack_payment
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -23,50 +22,59 @@ dp.include_router(router)
 # --------------------------
 @router.message(Command("start"))
 async def start_cmd(msg: Message):
+    tg_id = msg.from_user.id
+    email = f"{tg_id}@megawin.ng"
+
     async with async_session() as db:
+
         q = await db.execute(
-            select(User).where(User.telegram_id == msg.from_user.id)
+            select(User).where(User.telegram_id == tg_id)
         )
         user = q.scalar_one_or_none()
 
+        # CREATE USER IF MISSING
         if not user:
-            await db.execute(
+            result = await db.execute(
                 insert(User).values(
-                    telegram_id=msg.from_user.id,
-                    username=msg.from_user.username or "",
-                )
+                    telegram_id=tg_id,
+                    email=email
+                ).returning(User.id)
             )
             await db.commit()
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="💳 Buy Tickets", callback_data="buy")],
-            [InlineKeyboardButton(text="📊 My Balance", callback_data="bal")],
+            [InlineKeyboardButton(text="📊 My Tickets", callback_data="bal")],
         ]
     )
 
     await msg.answer(
-        "🎉 *Welcome to MegaWin Raffle!*\n\n"
+        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
         "You can buy tickets using Paystack.\n"
         "Good luck! 🍀",
         reply_markup=kb,
-        parse_mode="Markdown",
     )
 
 
 # --------------------------
-# CHECK BALANCE
+# CHECK MY TICKETS
 # --------------------------
 @router.callback_query(F.data == "bal")
 async def check_balance(cb):
+    tg_id = cb.from_user.id
+
     async with async_session() as db:
         q = await db.execute(
-            select(User).where(User.telegram_id == cb.from_user.id)
+            select(User).where(User.telegram_id == tg_id)
         )
         user = q.scalar_one()
 
+        # Count tickets
+        ticket_count = len(user.tickets)
+
     await cb.message.answer(
-        f"💰 *Your Balance:* ₦{user.balance:,}", parse_mode="Markdown"
+        f"🎟️ <b>Your Tickets:</b> {ticket_count}",
     )
     await cb.answer()
 
@@ -76,15 +84,22 @@ async def check_balance(cb):
 # --------------------------
 @router.callback_query(F.data == "buy")
 async def buy(cb):
-    amount = 1000  # static demo price
+    tg_id = cb.from_user.id
+    amount = 1000
 
-    email = f"{cb.from_user.id}@megawin.ng"
+    email = f"{tg_id}@megawin.ng"
     checkout_url, ref = await create_paystack_payment(amount, email)
 
     async with async_session() as db:
+        # Get real DB user id
+        q = await db.execute(
+            select(User).where(User.telegram_id == tg_id)
+        )
+        user = q.scalar_one()
+
         await db.execute(
             insert(RaffleEntry).values(
-                user_id=cb.from_user.id,
+                user_id=user.id,
                 reference=ref,
                 amount=amount,
             )
@@ -92,13 +107,7 @@ async def buy(cb):
         await db.commit()
 
     await cb.message.answer(
-        f"🔥 *Ticket Purchase Started!*\n\n"
-        f"Click below to complete payment:\n\n{checkout_url}",
-        parse_mode="Markdown",
+        f"🔥 <b>Ticket Purchase Started!</b>\n\n"
+        f"Complete payment:\n{checkout_url}"
     )
     await cb.answer()
-
-
-# --------------------------
-# NO NEED FOR connect_bot() — REMOVED
-# --------------------------
