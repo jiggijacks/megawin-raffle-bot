@@ -1,3 +1,4 @@
+# main.py (in project root or app/main.py depending on your layout)
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,27 +7,14 @@ from app.database import init_db
 from app.routers.webhooks import router as webhooks_router
 from app.bot import bot, dp
 
-
 app = FastAPI()
 
-# -------------------------------
-# Correct DB cleanup (SQLite)
-# -------------------------------
-if os.path.exists("raffle.db"):
-    print("🔥 Removing old raffle.db (schema outdated)")
-    os.remove("raffle.db")
+# optional: remove old raffle.db only if you need fresh schema
+if os.getenv("RESET_DB_AT_STARTUP", "false").lower() in ("1","true","yes"):
+    if os.path.exists("raffle.db"):
+        print("🔥 Removing old raffle.db (schema outdated)")
+        os.remove("raffle.db")
 
-# -------------------------------
-# Webhook URL
-# -------------------------------
-TELEGRAM_WEBHOOK_URL = os.getenv(
-    "WEBHOOK_URL",
-    "https://disciplined-expression-telegram-bot.up.railway.app/webhook/telegram",
-)
-
-# -------------------------------
-# CORS
-# -------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,17 +23,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------------------
-# Register routers
-# -------------------------------
 print("🚀 Loading webhooks router...")
 app.include_router(webhooks_router)
 print("✅ Router loaded!")
 
+TELEGRAM_WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-railway-domain.up.railway.app/webhook/telegram")
 
-# -------------------------------
-# Startup
-# -------------------------------
 @app.on_event("startup")
 async def on_startup():
     print("🚀 Initializing database...")
@@ -57,16 +40,7 @@ async def on_startup():
     app.state.dp = dp
     print("✅ Attached.")
 
-    print("🚀 Setting webhook...")
-    await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
-    print("✅ Webhook set:", TELEGRAM_WEBHOOK_URL)
-
-
-# -------------------------------
-# Shutdown
-# -------------------------------
-@app.on_event("shutdown")
-async def on_shutdown():
-    print("🛑 Removing webhook...")
-    await bot.delete_webhook()
-    print("✅ Webhook removed.")
+    if os.getenv("USE_WEBHOOK", "true").lower() in ("1","true","yes"):
+        print("🚀 Setting webhook:", TELEGRAM_WEBHOOK_URL)
+        await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
+        print("✅ Webhook set.")
