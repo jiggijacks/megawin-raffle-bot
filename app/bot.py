@@ -15,7 +15,8 @@ from aiogram.enums import ParseMode
 
 from sqlalchemy import select, insert, delete
 from sqlalchemy.exc import NoResultFound, SQLAlchemyError
-from app.database import async_session, User, Ticket, RaffleEntry
+from app.database import async_session, User, Ticket, RaffleEntry, Transaction, Winner
+
 
 from app.paystack import create_paystack_payment
 from app.utils import generate_ticket_code, referral_link, TICKET_PRICE
@@ -28,9 +29,12 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "622882174").split(",") if x.strip
 
 # Bot & dispatcher
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+
 dp = Dispatcher()
 router = Router()
-dp.include_router(router)
+
+# ❌ REMOVE dp.include_router(router)
+# We will attach the router ONLY from main.py
 
 # -------------------------
 # Helpers
@@ -124,20 +128,6 @@ async def help_cmd(msg: Message):
     )
     await msg.answer(text, reply_markup=main_menu())
 
-# -------------------------
-# Purchase flow (inline + command)
-# -------------------------
-@router.callback_query(F.data.startswith("buy"))
-async def buy_cb(cb: CallbackQuery):
-    # callback data like buy_1 or buy_5
-    qty = 1
-    try:
-        parts = cb.data.split("_")
-        if len(parts) == 2:
-            qty = int(parts[1])
-    except Exception:
-        qty = 1
-    await handle_purchase(cb.message, cb.from_user.id, qty, cb)
 
 # --------------------------
 # BUY INLINE BUTTON HANDLER
@@ -417,6 +407,11 @@ async def fallback(message: Message):
 
 def register_handlers(dp: Dispatcher):
     """
-    This exposes all router handlers to main.py
+    Safely register router ONLY once.
     """
-    dp.include_router(router)
+    try:
+        dp.include_router(router)
+    except RuntimeError:
+        # Router was already attached; ignore silently
+        pass
+
