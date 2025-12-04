@@ -1,18 +1,17 @@
-# app/routers/webhooks.py
-from fastapi import APIRouter, Request
-from aiogram import Bot
-from aiogram.types import Update
+--- OLD: app/routers/webhooks.py
++++ NEW: app/routers/webhooks.py
+@@
+ @router.post("/webhook/telegram")
+ async def telegram_webhook(request: Request):
+-    bot: Bot = bot
+-    dp = dp
++    print("🔥 WEBHOOK HIT")
++    bot: Bot = request.app.state.bot
++    dp = request.app.state.dp
 
-router = APIRouter()
+     data = await request.json()
++    print("📩 Incoming update:", data)
+     update = Update.model_validate(data)
 
-@router.post("/webhook/telegram")
-async def telegram_webhook(request: Request):
-    print("🔥 WEBHOOK HIT")
-    bot: Bot = request.app.state.bot
-    dp = request.app.state.dp
-
-    data = await request.json()
-    print("📩 Incoming update:", data)
-    update = Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
+     await dp.feed_update(bot, update)
+     return {"ok": True}

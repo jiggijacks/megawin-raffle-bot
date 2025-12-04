@@ -1,46 +1,46 @@
-# main.py (in project root or app/main.py depending on your layout)
-import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+--- OLD: main.py
++++ NEW: main.py
+@@
+ import os
+ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
+-from database import init_db
+-from app.routers.webhooks import router as webhooks_router
+-from app.bot import bot, dp
++from app.database import init_db
++from app.routers.webhooks import router as webhooks_router
++from app.bot import bot, dp
 
-from app.database import init_db
-from app.routers.webhooks import router as webhooks_router
-from app.bot import bot, dp
+ app = FastAPI()
 
-app = FastAPI()
+-print("🚀 Loading webhooks router...")
+-app.include_router(webhooks_router)
+-print("✅ Router loaded!")
++print("🚀 Loading routers...")
++app.include_router(webhooks_router)
++print("✅ Routers ready")
 
-# optional: remove old raffle.db only if you need fresh schema
-if os.getenv("RESET_DB_AT_STARTUP", "false").lower() in ("1","true","yes"):
-    if os.path.exists("raffle.db"):
-        print("🔥 Removing old raffle.db (schema outdated)")
-        os.remove("raffle.db")
+ TELEGRAM_WEBHOOK_URL = os.getenv(
+-    "WEBHOOK_URL",
+-    "https://disciplined-expression-telegram-bot.up.railway.app/webhook/telegram",
++    "WEBHOOK_URL",
++    "https://YOUR-RAILWAY-URL.up.railway.app/webhook/telegram",
+ )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@@
+ @app.on_event("startup")
+ async def on_startup():
+-    await init_db()
++    print("🚀 Initializing database…")
++    await init_db()
++    print("✅ DB ready")
 
-print("🚀 Loading webhooks router...")
-app.include_router(webhooks_router)
-print("✅ Router loaded!")
-
-TELEGRAM_WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-railway-domain.up.railway.app/webhook/telegram")
-
-@app.on_event("startup")
-async def on_startup():
-    print("🚀 Initializing database...")
-    await init_db()
-    print("✅ Database initialized.")
-
-    print("🚀 Attaching bot + dispatcher...")
-    app.state.bot = bot
-    app.state.dp = dp
-    print("✅ Attached.")
-
-    if os.getenv("USE_WEBHOOK", "true").lower() in ("1","true","yes"):
-        print("🚀 Setting webhook:", TELEGRAM_WEBHOOK_URL)
-        await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
-        print("✅ Webhook set.")
+-    if USE_WEBHOOK:
+-        await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
++    print("🚀 Attaching bot + dp")
++    app.state.bot = bot
++    app.state.dp = dp
++
++    print(f"🚀 Setting webhook → {TELEGRAM_WEBHOOK_URL}")
++    await bot.set_webhook(TELEGRAM_WEBHOOK_URL)
++    print("✅ Webhook set")
