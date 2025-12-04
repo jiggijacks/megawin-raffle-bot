@@ -410,3 +410,13 @@ async def cb_help(cb: CallbackQuery):
 @router.message()
 async def fallback(message: Message):
     await message.answer("Use the menu or /help", reply_markup=main_menu())
+
+# ============================================================
+# REGISTER HANDLERS FOR MAIN.PY
+# ============================================================
+
+def register_handlers(dp: Dispatcher):
+    """
+    This exposes all router handlers to main.py
+    """
+    dp.include_router(router)
