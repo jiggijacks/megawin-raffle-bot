@@ -343,8 +343,7 @@ async def announce_winner_cmd(msg: Message):
         if not ticket:
             return await msg.reply("Ticket code not found.")
         # log winner
-        await db.execute(insert(Winner).values(ticket_code=ticket.code, user_id=ticket.user_id, announced_by=str(msg.from_user.id), notes=notes))
-        await db.commit()
+        
         q = await db.execute(select(User).where(User.id == ticket.user_id))
         user = q.scalar_one()
     announce_text = (

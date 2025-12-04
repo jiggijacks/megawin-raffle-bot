@@ -1,16 +1,9 @@
+# utils.py
 import random
 import string
 
-# ============================================================
-# GLOBAL SETTINGS
-# ============================================================
-
 # Cost per ticket in naira
 TICKET_PRICE = 500
-
-# ============================================================
-# REFERENCE & TICKET GENERATORS
-# ============================================================
 
 def generate_reference() -> str:
     """Generate Paystack transaction reference."""
@@ -25,13 +18,10 @@ def generate_ticket_code() -> str:
     return f"#{prefix}{mid}{nums}"
 
 
-# ============================================================
-# REFERRAL SYSTEM
-# ============================================================
-
-def referral_link(user_id: int) -> str:
+def referral_link(bot_username: str, user_id: int) -> str:
     """
     Creates a referral link like:
     https://t.me/MegaWinRaffleBot?start=ref_12345
     """
-    return f"https://t.me/MegaWinRaffleBot?start=ref_{user_id}"
+    name = bot_username.lstrip("@")
+    return f"https://t.me/{name}?start=ref_{user_id}"
