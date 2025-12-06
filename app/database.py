@@ -5,15 +5,14 @@ from sqlalchemy import (
     Column, Integer, String, Boolean, ForeignKey, Float, DateTime, func
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# sensible default for local dev
+# sensible default for local dev (sqlite)
 if not DATABASE_URL:
     DATABASE_URL = "sqlite+aiosqlite:///raffle.db"
 
-# force async URL if Heroku-style postgres url
+# force async URL if old-style postgres URL is present (not used for sqlite)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://")
 
@@ -28,11 +27,7 @@ async_session = sessionmaker(
 
 Base = declarative_base()
 
-
-# ======================================================
 # MODELS
-# ======================================================
-
 class User(Base):
     __tablename__ = "users"
 
@@ -96,10 +91,7 @@ class Winner(Base):
     announced_at = Column(DateTime, default=func.now())
 
 
-# ======================================================
-# DB helpers
-# ======================================================
-
+# helpers
 async def get_db():
     async with async_session() as session:
         try:

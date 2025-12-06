@@ -1,49 +1,56 @@
+# app/paystack.py
 import os
 import httpx
+from typing import Optional, Dict
 from app.utils import generate_reference
 
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET", "")
+# accept either PAYSTACK_SECRET_KEY or PAYSTACK_SECRET for compatibility
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET_KEY") or os.getenv("PAYSTACK_SECRET")
+PAYSTACK_PUBLIC = os.getenv("PAYSTACK_PUBLIC") or os.getenv("PAYSTACK_PUBLIC_KEY", "")
+
+BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
 
 
-BASE_URL = "https://api.paystack.co"
-
-
-async def create_paystack_payment(amount: int, email: str):
+async def create_paystack_payment(amount: int, email: str, metadata: Optional[Dict] = None):
     """
-    Initializes a Paystack inline transaction
+    Initialize Paystack transaction. Returns (checkout_url, reference).
+    - amount: integer in NAIRA (we multiply by 100)
+    - metadata: optional dictionary (we use it to pass tg_user_id)
     """
+    if not PAYSTACK_SECRET:
+        raise Exception("PAYSTACK secret key not configured (PAYSTACK_SECRET_KEY or PAYSTACK_SECRET)")
+
     ref = generate_reference()
-
     payload = {
         "email": email,
-        "amount": amount * 100,  # Paystack uses kobo
+        "amount": int(amount) * 100,
         "reference": ref,
-        "callback_url": "https://t.me/MegaWinRaffle"
     }
+    if metadata:
+        payload["metadata"] = metadata
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         res = await client.post(
             f"{BASE_URL}/transaction/initialize",
             json=payload,
             headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"}
         )
         data = res.json()
-
         if not data.get("status"):
-            raise Exception(data)
-
+            raise Exception(f"Paystack initialize failed: {data}")
         return data["data"]["authorization_url"], ref
 
 
 async def verify_payment(reference: str):
     """
-    Should be called from webhook.
+    Verify a transaction by reference. Returns Paystack response dict.
     """
-    async with httpx.AsyncClient() as client:
+    if not PAYSTACK_SECRET:
+        raise Exception("PAYSTACK secret key not configured (PAYSTACK_SECRET_KEY or PAYSTACK_SECRET)")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
         res = await client.get(
             f"{BASE_URL}/transaction/verify/{reference}",
             headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"}
         )
-
-        data = res.json()
-        return data
+        return res.json()
