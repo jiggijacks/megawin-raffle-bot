@@ -1,32 +1,22 @@
-# app/routers/webhooks.py
-from fastapi import APIRouter, Request, HTTPException
-from aiogram.types import Update
+from fastapi import APIRouter, Request
+from aiogram import types
 
 router = APIRouter()
 
 
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    """
-    Telegram sends updates here.
-    Converts raw JSON into aiogram Update and gives it to Dispatcher.
-    """
 
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
+    # Telegram sends JSON update here
+    payload = await request.json()
 
-    # Load bot + dispatcher created in main.py startup()
     bot = request.app.state.bot
     dp = request.app.state.dp
 
-    try:
-        update = Update.model_validate(data)
-    except Exception as e:
-        raise HTTPException(400, f"Invalid Telegram payload: {e}")
+    # Convert JSON → aiogram Update
+    update = types.Update(**payload)
 
-    # Aiogram v3 correct call:
-    await dp.router.propagate_event(update, bot=bot)
+    # Send update into dispatcher (Aiogram v3 correct method)
+    await dp.feed_update(bot, update)
 
     return {"ok": True}
