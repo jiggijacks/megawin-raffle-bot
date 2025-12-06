@@ -1,24 +1,17 @@
-# app/routers/webhooks.py
 from fastapi import APIRouter, Request
-from aiogram import types
-from app.utils import handle_telegram_update
+from aiogram.types import Update
+import traceback
+
+from app.bot import bot, dp
 
 router = APIRouter()
 
-
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    """
-    This receives Telegram updates and forwards them
-    into aiogram's Dispatcher stored in app.state.dp.
-    """
-    payload = await request.json()
-    
-    # access bot + dp through request.app.state
-    bot = request.app.state.bot
-    dp = request.app.state.dp
-
-    update = types.Update(**payload)
-
-    await dp.feed_update(bot, update)
+    data = await request.json()
+    try:
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+    except Exception:
+        traceback.print_exc()
     return {"ok": True}

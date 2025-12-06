@@ -2,6 +2,10 @@
 import random
 import string
 from typing import Optional
+from aiogram.types import Update
+import traceback
+from app.bot import bot, dp
+
 
 # Cost per ticket (₦)
 TICKET_PRICE = 500
@@ -30,3 +34,10 @@ def referral_link(bot_username_or_name: Optional[str], user_id: int) -> str:
     # strip leading @ if present; telegram t.me links don't use the @
     bot_name = bot_name.lstrip("@")
     return f"https://t.me/{bot_name}?start=ref_{user_id}"
+
+async def handle_telegram_update(data: dict):
+    try:
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+    except Exception:
+        traceback.print_exc()
