@@ -2,10 +2,6 @@
 import random
 import string
 from typing import Optional
-from aiogram.types import Update
-import traceback
-from app.bot import bot, dp
-
 
 # Cost per ticket (₦)
 TICKET_PRICE = 500
