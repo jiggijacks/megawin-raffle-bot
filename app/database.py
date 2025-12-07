@@ -1,105 +1,115 @@
-import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import (
-    Column, Integer, String, Boolean, ForeignKey, Float, DateTime, func
-)
-from sqlalchemy.orm import relationship
+# app/routers/paystack_webhook.py
+from fastapi import APIRouter, Request, Header, HTTPException
+from app.paystack import verify_payment
+from app.database import async_session, RaffleEntry, Ticket, Transaction, User
+from app.utils import generate_ticket_code
+from sqlalchemy import select, insert
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-# sensible default for local dev (sqlite)
-if not DATABASE_URL:
-    DATABASE_URL = "sqlite+aiosqlite:///raffle.db"
-
-# force async URL if old-style postgres URL is present (not used for sqlite)
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://")
-
-engine = create_async_engine(DATABASE_URL, echo=False)
-
-async_session = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-    class_=AsyncSession,
-)
-
-Base = declarative_base()
-
-# MODELS
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(String, unique=True, nullable=False, index=True)
-    username = Column(String, nullable=True)
-    email = Column(String, unique=True, nullable=True)
-    balance = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=func.now())
-
-    tickets = relationship("Ticket", back_populates="user", cascade="all, delete-orphan")
-    raffle_entries = relationship("RaffleEntry", back_populates="user", cascade="all, delete-orphan")
-    transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
+router = APIRouter()
 
 
-class RaffleEntry(Base):
-    __tablename__ = "raffle_entries"
+@router.post("/webhook/paystack")
+async def paystack_webhook(request: Request, x_paystack_signature: str | None = Header(None)):
+    """
+    Paystack webhook → Verify transaction, create tickets, notify user
+    """
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    quantity = Column(Integer, default=0)
-    amount = Column(Float, default=0.0)
-    reference = Column(String, unique=True, nullable=False, index=True)
-    confirmed = Column(Boolean, default=False)  # becomes True when payment is verified
-    created_at = Column(DateTime, default=func.now())
+    payload = await request.json()
 
-    user = relationship("User", back_populates="raffle_entries")
+    # ---- EXTRACT REFERENCE ----
+    data = payload.get("data") or {}
+    reference = data.get("reference") or payload.get("reference")
+    if not reference:
+        raise HTTPException(status_code=400, detail="No reference in payload")
 
+    # ---- VERIFY THROUGH PAYSTACK ----
+    verification = await verify_payment(reference)
+    status = verification.get("data", {}).get("status")
 
-class Ticket(Base):
-    __tablename__ = "tickets"
+    if status != "success":
+        return {"ok": False, "reason": "payment not successful", "status": status}
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    code = Column(String, unique=True, index=True)
-    created_at = Column(DateTime, default=func.now())
+    # Customer email (fallback method)
+    email = verification.get("data", {}).get("customer", {}).get("email", "")
 
-    user = relationship("User", back_populates="tickets")
+    # ---- FIND ENTRY ----
+    async with async_session() as db:
+        q = await db.execute(select(RaffleEntry).where(RaffleEntry.reference == reference))
+        entry = q.scalar_one_or_none()
 
+        # fallback: match by email
+        if not entry and email:
+            uq = await db.execute(select(User).where(User.email == email))
+            user = uq.scalar_one_or_none()
+            if user:
+                eq = await db.execute(
+                    select(RaffleEntry)
+                    .where(RaffleEntry.user_id == user.id)
+                    .order_by(RaffleEntry.created_at.desc())
+                )
+                entry = eq.scalar_one_or_none()
 
-class Transaction(Base):
-    __tablename__ = "transactions"
+        if not entry:
+            return {"ok": False, "reason": "no raffle entry"}
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    amount = Column(Float, nullable=False)
-    reference = Column(String, unique=True, nullable=False, index=True)
-    created_at = Column(DateTime, default=func.now())
+        # ---- ALREADY PROCESSED ----
+        if entry.confirmed:
+            return {"ok": True, "processed": False, "reason": "already confirmed"}
 
-    user = relationship("User", back_populates="transactions")
+        # ---- GET USER ----
+        uq = await db.execute(select(User).where(User.id == entry.user_id))
+        user = uq.scalar_one()
 
+        # ---- CREATE TRANSACTION ----
+        await db.execute(
+            insert(Transaction).values(
+                user_id=user.id,
+                amount=entry.amount,
+                reference=entry.reference,
+            )
+        )
 
-class Winner(Base):
-    __tablename__ = "winners"
+        # ---- CREATE TICKETS ----
+        created_codes = []
+        for _ in range(entry.quantity or 1):
+            code = generate_ticket_code()
 
-    id = Column(Integer, primary_key=True)
-    ticket_code = Column(String, nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    announced_by = Column(String, nullable=True)
-    notes = Column(String, nullable=True)
-    announced_at = Column(DateTime, default=func.now())
+            # Ensure unique code
+            while True:
+                tq = await db.execute(select(Ticket).where(Ticket.code == code))
+                if not tq.scalar_one_or_none():
+                    break
+                code = generate_ticket_code()
 
+            await db.execute(
+                insert(Ticket).values(
+                    user_id=user.id,
+                    code=code
+                )
+            )
+            created_codes.append(code)
 
-# helpers
-async def get_db():
-    async with async_session() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        # ---- MARK AS CONFIRMED ----
+        entry.confirmed = True
+        await db.commit()
 
+    # ---- SEND TELEGRAM MESSAGE TO USER ----
+    try:
+        bot = request.app.state.bot
+        ticket_text = "\n".join(created_codes)
 
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await bot.send_message(
+            chat_id=int(user.telegram_id),
+            text=(
+                "✅ <b>Payment Confirmed!</b>\n\n"
+                f"You purchased <b>{entry.quantity}</b> ticket(s).\n"
+                "Your ticket codes:\n\n"
+                f"<code>{ticket_text}</code>\n\n"
+                "Good luck! 🍀"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("⚠️ Failed to notify user:", e)
+
+    return {"ok": True, "codes": created_codes}
