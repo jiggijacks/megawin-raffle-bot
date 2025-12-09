@@ -15,7 +15,7 @@ from sqlalchemy import select, insert, delete, update
 from sqlalchemy.exc import NoResultFound, SQLAlchemyError
 from app.database import async_session, User, Ticket, RaffleEntry, Transaction, Winner
 
-from paystack import create_paystack_payment
+from app.paystack import create_paystack_payment
 from utils import generate_ticket_code, referral_link, TICKET_PRICE
 
 # Config via env
