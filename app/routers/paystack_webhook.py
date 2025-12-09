@@ -1,47 +1,40 @@
 # app/routers/paystack_webhook.py
 from fastapi import APIRouter, Request, Header, HTTPException
-from app.paystack import verify_payment
+from paystack import verify_payment
 from app.database import async_session, RaffleEntry, Ticket, Transaction, User
-from app.utils import generate_ticket_code
-from sqlalchemy import select, insert, update
+from utils import generate_ticket_code
+from sqlalchemy import select, insert
 from sqlalchemy.exc import NoResultFound
 
 router = APIRouter()
 
-
 @router.post("/webhook/paystack")
 async def paystack_webhook(request: Request, x_paystack_signature: str | None = Header(None)):
     """
-    Paystack webhook handler:
-      - verifies reference with Paystack API
-      - if successful and not processed, mark raffle_entry confirmed,
-        create Transaction row and Ticket rows for the requested quantity.
+    Paystack webhook handler.
+    Verifies transaction, creates Transaction and Ticket rows, marks entry confirmed.
     """
     payload = await request.json()
-
-    # extract reference from webhook payload (flexible)
     data = payload.get("data") or {}
     reference = data.get("reference") or payload.get("reference")
     if not reference:
-        raise HTTPException(status_code=400, detail="No reference found in payload")
+        raise HTTPException(status_code=400, detail="No reference in payload")
 
-    # Verify with Paystack API to be safe
+    # Verify via Paystack REST API
     try:
         verification = await verify_payment(reference)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Verification failed: {e}")
+        raise HTTPException(status_code=500, detail=f"verify failed: {e}")
 
     status = verification.get("data", {}).get("status")
     if status != "success":
-        # ignore non-final/failed payments
         return {"ok": False, "reason": "payment not successful", "status": status}
 
-    metadata = verification.get("data", {}).get("metadata") or {}
+    metadata = verification.get("data", {}).get("metadata", {}) or {}
     tg_user_id = metadata.get("tg_user_id")
     email = verification.get("data", {}).get("customer", {}).get("email") or ""
 
     async with async_session() as db:
-        # find the raffle entry by reference
         q = await db.execute(select(RaffleEntry).where(RaffleEntry.reference == reference))
         entry = q.scalar_one_or_none()
 
@@ -50,30 +43,21 @@ async def paystack_webhook(request: Request, x_paystack_signature: str | None = 
             q = await db.execute(select(User).where(User.email == email))
             user = q.scalar_one_or_none()
             if user:
-                q = await db.execute(
-                    select(RaffleEntry).where(RaffleEntry.user_id == user.id).order_by(RaffleEntry.created_at.desc())
-                )
+                q = await db.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id).order_by(RaffleEntry.created_at.desc()))
                 entry = q.scalar_one_or_none()
 
         if not entry:
-            return {"ok": False, "reason": "no raffle entry found"}
+            return {"ok": False, "reason": "no raffle entry"}
 
         if entry.confirmed:
             return {"ok": True, "processed": False, "reason": "already confirmed"}
 
-        # record transaction
-        await db.execute(
-            insert(Transaction).values(
-                user_id=entry.user_id,
-                amount=entry.amount,
-                reference=entry.reference
-            )
-        )
+        # create transaction row
+        await db.execute(insert(Transaction).values(user_id=entry.user_id, amount=entry.amount, reference=entry.reference))
 
         # create tickets
         created_codes = []
-        qty = int(entry.quantity or 1)
-        for _ in range(qty):
+        for _ in range(entry.quantity or 1):
             code = generate_ticket_code()
             # ensure unique
             while True:
@@ -84,9 +68,9 @@ async def paystack_webhook(request: Request, x_paystack_signature: str | None = 
             await db.execute(insert(Ticket).values(user_id=entry.user_id, code=code))
             created_codes.append(code)
 
-        # mark entry as confirmed
+        # mark entry confirmed
         await db.execute(
-            update(RaffleEntry).where(RaffleEntry.id == entry.id).values(confirmed=True)
+            RaffleEntry.__table__.update().where(RaffleEntry.id == entry.id).values(confirmed=True)
         )
         await db.commit()
 
