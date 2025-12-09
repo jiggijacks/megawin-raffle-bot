@@ -16,7 +16,7 @@ from sqlalchemy.exc import NoResultFound, SQLAlchemyError
 from app.database import async_session, User, Ticket, RaffleEntry, Transaction, Winner
 
 from app.paystack import create_paystack_payment
-from utils import generate_ticket_code, referral_link, TICKET_PRICE
+from app.utils import generate_ticket_code, referral_link, TICKET_PRICE
 
 # Config via env
 TOKEN = os.getenv("BOT_TOKEN", "")
