@@ -1,6 +1,6 @@
 import os
 import httpx
-from utils import generate_reference
+from app.utils import generate_reference
 
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET_KEY", "")
 BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
