@@ -1,166 +1,48 @@
 # app/bot.py
 import os
 import asyncio
-from typing import Optional, List
-
+from typing import Optional
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.filters.command import Command
-from aiogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
-)
+from aiogram.filters import Command
+from aiogram.types import Message
 from aiogram.enums import ParseMode
 
-from sqlalchemy import select, insert, delete
-from sqlalchemy.exc import NoResultFound, SQLAlchemyError
+from sqlalchemy import select, insert
+from sqlalchemy.exc import SQLAlchemyError
 from app.database import async_session, User, Ticket, RaffleEntry, Transaction, Winner
-
 
 from app.paystack import create_paystack_payment
 from app.utils import generate_ticket_code, referral_link, TICKET_PRICE
 
 # Config via env
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "MegaWinRaffleBot")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@MegaWinRaffle")  # ensure leading @
-ADMINS = [int(x) for x in os.getenv("ADMINS", "622882174").split(",") if x.strip()]
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@MegaWinRaffle")
+ADMINS = [int(x) for x in os.getenv("ADMIN_ID", "").split(",") if x.strip()]
 
-# Bot & dispatcher
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
-
-dp = Dispatcher()
+# router for handlers
 router = Router()
 
-# ❌ REMOVE dp.include_router(router)
-# We will attach the router ONLY from main.py
-
-# -------------------------
-# Helpers
-# -------------------------
-def main_menu() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎟 Buy Tickets", callback_data="open_buy_menu")],
-        [InlineKeyboardButton(text="📊 My Tickets", callback_data="my_tickets")],
-        [
-            InlineKeyboardButton(text="👥 Referral", callback_data="referral"),
-            InlineKeyboardButton(text="ℹ Help", callback_data="help_btn")
-        ],
-    ])
-    return kb
-
-
-async def ensure_user(session, telegram_user) -> User:
-    """Return User row for the given telegram_user (create if missing)."""
-    tg = str(telegram_user.id)
-    q = await session.execute(select(User).where(User.telegram_id == tg))
-    user = q.scalar_one_or_none()
-    if user:
-        return user
-
-    await session.execute(
-        insert(User).values(
-            telegram_id=tg,
-            username=telegram_user.username or "",
-            email=f"{tg}@megawin.ng",
-            balance=0.0,
-        )
-    )
-    await session.commit()
-    q = await session.execute(select(User).where(User.telegram_id == tg))
-    return q.scalar_one()
-
-def is_admin(user_id: int) -> bool:
+# --- Helpers ---
+def _is_admin(user_id: int) -> bool:
     try:
         return int(user_id) in ADMINS
     except Exception:
         return False
 
-async def check_subscription(user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception:
-        return False
+def main_menu():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 Buy Tickets", callback_data="open_buy_menu")],
+        [InlineKeyboardButton(text="📊 My Tickets", callback_data="my_tickets")],
+        [
+            InlineKeyboardButton(text="👥 Referral", callback_data="referral"),
+            InlineKeyboardButton(text="ℹ Help", callback_data="help_btn"),
+        ],
+    ])
+    return kb
 
-
-# -------------------------
-# Commands: /start, /help
-# -------------------------
-@router.message(Command("start"))
-async def start_cmd(msg: Message):
-    # Check channel membership (best-effort)
-    member_ok = True
-    if CHANNEL_USERNAME:
-        try:
-            await bot.get_chat_member(CHANNEL_USERNAME, msg.from_user.id)
-        except Exception:
-            member_ok = False
-
-    async with async_session() as db:
-        await ensure_user(db, msg.from_user)
-
-    welcome_text = (
-        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
-        "Win exciting prizes by buying raffle tickets. Each ticket costs ₦500.\n\n"
-        "How it works:\n"
-        "• Buy tickets → each ticket gets a unique code (e.g. #A1Z286)\n"
-        "• Admin will announce the winner (picked manually using a 3rd-party tool)\n"
-        "• Tickets are reset after each draw\n\n"
-        "Use the menu below to get started."
-    )
-
-    if not member_ok and CHANNEL_USERNAME:
-        await msg.answer(
-            f"⚠️ Please join our channel to participate and stay updated:\n"
-            f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}"
-        )
-
-    await msg.answer(welcome_text, reply_markup=main_menu())
-
-@router.message(Command(commands=["help"]))
-async def help_cmd(msg: Message):
-    text = (
-        "ℹ️ HELP MENU\n\n"
-        "/buy - Buy tickets\n"
-        "/tickets - Show your tickets\n"
-        "/balance - Show balance\n"
-        "/referral - Get referral link\n"
-        "/userstat - Your stats\n\n"
-        "Admin commands:\n"
-        "/stats - Overview stats\n"
-        "/transactions - View recent transactions\n"
-        "/broadcast <msg> - Send message to all users\n"
-        "/announce_winner <TICKET_CODE> [notes]\n"
-        "/draw_reset - Reset tickets after a draw"
-    )
-    await msg.answer(text, reply_markup=main_menu(), parse_mode=None)
-
-
-
-# --------------------------
-# BUY INLINE BUTTON HANDLER
-# --------------------------
-@router.callback_query(F.data.startswith("buy"))
-async def buy_cb(cb: CallbackQuery):
-    """
-    Handles buy_1, buy_5, buy_10, buy_custom
-    """
-    parts = cb.data.split("_")
-    qty = 1
-
-    if len(parts) == 2 and parts[1].isdigit():
-        qty = int(parts[1])
-
-    await initiate_purchase(cb.message, cb.from_user.id, qty, cb)
-
-
-# --------------------------
-# /buy COMMAND
-# --------------------------
-@router.callback_query(F.data == "open_buy_menu")
-async def open_buy_menu(cb: CallbackQuery):
+def buy_options_menu():
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Buy 1 (₦500)", callback_data="buy_1"),
@@ -173,66 +55,114 @@ async def open_buy_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="⬅ Back", callback_data="back_to_main")],
     ])
     return kb
-    
 
+# --- /start and /help ---
+@router.message(Command("start"))
+async def start_cmd(msg: Message):
+    welcome_text = (
+        "🎉 <b>Welcome to MegaWin Raffle!</b>\n\n"
+        "Win prizes by buying tickets (₦500 each).\n"
+        "Buy multiple tickets, then admins will pick winners manually and announce.\n\n"
+        "Use the menu below to get started."
+    )
+    await msg.answer(welcome_text, reply_markup=main_menu(), parse_mode="HTML")
 
+@router.message(Command("help"))
+async def help_cmd(msg: Message):
+    text = (
+        "ℹ️ <b>Help</b>\n\n"
+        "/buy - Buy tickets\n"
+        "/tickets - Show your ticket codes\n"
+        "/balance - Show balance\n"
+        "/referral - Get referral link\n"
+        "/userstat - Your stats\n\n"
+        "Admin commands:\n"
+        "/stats /transactions /broadcast /announce_winner /draw_reset\n"
+    )
+    await msg.answer(text, reply_markup=main_menu(), parse_mode="HTML")
 
-# --------------------------
-# PURCHASE INITIATION FUNCTION
-# --------------------------
-async def initiate_purchase(
-    message: Message,
-    tg_user_id: int,
-    quantity: int,
-    callback: Optional[CallbackQuery] = None
-):
-    """
-    Create Paystack checkout.
-    IMPORTANT:
-    - NO tickets are created here.
-    - Only a RaffleEntry is stored.
-    - Tickets will be created after Paystack webhook confirms payment.
-    """
+# --- Buy menu open (inline + command) ---
+@router.callback_query(F.data == "open_buy_menu")
+async def cb_open_buy(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    await cb.message.answer("🎟 Choose how many tickets to buy:", reply_markup=buy_options_menu())
+    await cb.answer()
+
+@router.callback_query(F.data == "back_to_main")
+async def cb_back(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    await cb.message.answer("Main menu:", reply_markup=main_menu())
+    await cb.answer()
+
+# --- Handle buy callback (1,5,10,custom) ---
+@router.callback_query(F.data.startswith("buy_"))
+async def buy_cb(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    data = cb.data  # e.g. buy_1 or buy_custom
+    parts = data.split("_", 1)
+    qty = 1
+    if len(parts) > 1 and parts[1].isdigit():
+        qty = int(parts[1])
+        await initiate_purchase(cb.message, cb.from_user.id, qty, cb)
+    elif parts[1] == "custom":
+        # ask user for number
+        await cb.message.answer("Send the number of tickets you want to buy (e.g. 3):", reply_markup=main_menu())
+        await cb.answer("Send the number as a message (e.g. 3).")
+    else:
+        await cb.answer()
+
+# --- /buy command (shortcut opens buy menu or /buy <n>) ---
+@router.message(Command("buy"))
+async def buy_cmd(msg: Message):
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip().isdigit():
+        qty = int(parts[1].strip())
+        return await initiate_purchase(msg, msg.from_user.id, qty, None)
+    await msg.answer("Choose ticket option:", reply_markup=buy_options_menu())
+
+# --- handle numeric message after 'custom' prompt ---
+@router.message()
+async def numeric_purchase_handler(message: Message):
+    # If user sends a plain integer and it's >0, treat as custom buy
+    txt = (message.text or "").strip()
+    if not txt.isdigit():
+        # fallback applied later
+        return
+    qty = int(txt)
+    if qty <= 0:
+        await message.answer("Please send a positive number.")
+        return
+    await initiate_purchase(message, message.from_user.id, qty, None)
+
+# --- initiate purchase ---
+async def initiate_purchase(message: Message, tg_user_id: int, quantity: int, callback: Optional[CallbackQuery]=None):
     amount = TICKET_PRICE * quantity
     email = f"{tg_user_id}@megawin.ng"
 
-    # Create Paystack session
     try:
-        checkout_url, ref = await create_paystack_payment(amount, email)
-    except Exception:
+        checkout_url, ref = await create_paystack_payment(amount, email, tg_user_id=tg_user_id)
+    except Exception as e:
         txt = "⚠️ Could not initialize Paystack payment. Try again."
         if callback:
             await callback.message.answer(txt)
             await callback.answer()
         else:
             await message.answer(txt)
+        print("Paystack init error:", e)
         return
 
-    # Save reference (no ticket yet)
+    # Save pending raffle entry
     async with async_session() as db:
-        # ensure user exists
+        # try to find integer or string storage depending on your DB
         q = await db.execute(select(User).where(User.telegram_id == str(tg_user_id)))
         user = q.scalar_one_or_none()
-
         if not user:
-            await db.execute(insert(User).values(
-                telegram_id=str(tg_user_id),
-                username="",
-                email=email,
-                balance=0.0,
-            ))
+            await db.execute(insert(User).values(telegram_id=str(tg_user_id), username=message.from_user.username or "", email=email))
             await db.commit()
             q = await db.execute(select(User).where(User.telegram_id == str(tg_user_id)))
             user = q.scalar_one()
 
-        # create pending purchase record
-        await db.execute(insert(RaffleEntry).values(
-            user_id=user.id,
-            reference=ref,
-            amount=amount,
-            quantity=quantity,
-        ))
-
+        await db.execute(insert(RaffleEntry).values(user_id=user.id, reference=ref, amount=amount, quantity=quantity, confirmed=False))
         await db.commit()
 
     txt = (
@@ -242,17 +172,32 @@ async def initiate_purchase(
         f"<a href='{checkout_url}'>Click here to complete payment</a>\n\n"
         "🎫 Your tickets will be issued automatically once Paystack confirms your payment."
     )
-
     if callback:
         await callback.message.answer(txt, parse_mode="HTML", reply_markup=main_menu())
         await callback.answer()
     else:
         await message.answer(txt, parse_mode="HTML", reply_markup=main_menu())
 
+# --- tickets / balance / referral / userstat ---
+@router.callback_query(F.data == "my_tickets")
+async def cb_my_tickets(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    await tickets_cmd(cb.message)
+    await cb.answer()
 
-# -------------------------
-# /tickets /balance /referral /userstat
-# -------------------------
+@router.callback_query(F.data == "referral")
+async def cb_referral(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    await ref_cmd(cb.message)
+    await cb.answer()
+
+@router.callback_query(F.data == "help_btn")
+async def cb_help_inline(cb: CallbackQuery):
+    print("CALLBACK RECEIVED:", cb.from_user.id, cb.data)
+    # Reuse /help content
+    await help_cmd(cb.message)
+    await cb.answer()
+
 @router.message(Command("tickets"))
 async def tickets_cmd(msg: Message):
     async with async_session() as db:
@@ -289,14 +234,12 @@ async def userstat_cmd(msg: Message):
             return await msg.answer("No stats yet.", reply_markup=main_menu())
         q = await db.execute(select(Ticket).where(Ticket.user_id == user.id))
         tcount = len(q.scalars().all())
-        await msg.answer(f"📊 Your stats:\nTickets: {tcount}\nJoined: {user.created_at}", reply_markup=main_menu())
+        await msg.answer(f"📊 Your stats:\nTickets: {tcount}\nJoined: {getattr(user,'created_at', '')}", reply_markup=main_menu())
 
-# -------------------------
-# Admin commands
-# -------------------------
+# --- Admin commands: stats, transactions, broadcast, announce_winner, draw_reset ---
 @router.message(Command("stats"))
 async def stats_cmd(msg: Message):
-    if not is_admin(msg.from_user.id):
+    if not _is_admin(msg.from_user.id):
         return await msg.reply("Unauthorized.")
     async with async_session() as db:
         q = await db.execute(select(User))
@@ -309,8 +252,8 @@ async def stats_cmd(msg: Message):
 
 @router.message(Command("transactions"))
 async def transactions_cmd(msg: Message):
-    if not is_admin(msg.from_user.id):
-           return await msg.reply("Transactions logging not yet enabled.")
+    if not _is_admin(msg.from_user.id):
+        return await msg.reply("Unauthorized.")
     async with async_session() as db:
         q = await db.execute(select(Transaction).order_by(Transaction.created_at.desc()).limit(20))
         rows = q.scalars().all()
@@ -323,7 +266,7 @@ async def transactions_cmd(msg: Message):
 
 @router.message(Command("broadcast"))
 async def broadcast_cmd(msg: Message):
-    if not is_admin(msg.from_user.id):
+    if not _is_admin(msg.from_user.id):
         return await msg.reply("Unauthorized.")
     text = msg.text.partition(" ")[2].strip()
     if not text:
@@ -334,7 +277,7 @@ async def broadcast_cmd(msg: Message):
     sent = 0
     for u in users:
         try:
-            await bot.send_message(int(u.telegram_id), f"📣 Broadcast:\n\n{text}")
+            await router.bot.send_message(int(u.telegram_id), f"📣 Broadcast:\n\n{text}")
             sent += 1
             await asyncio.sleep(0.05)
         except Exception:
@@ -343,11 +286,7 @@ async def broadcast_cmd(msg: Message):
 
 @router.message(Command("announce_winner"))
 async def announce_winner_cmd(msg: Message):
-    """
-    Usage: /announce_winner <TICKET_CODE> [optional notes]
-    Admin manually picks winner using external tool then runs this to announce.
-    """
-    if not is_admin(msg.from_user.id):
+    if not _is_admin(msg.from_user.id):
         return await msg.reply("Unauthorized.")
     text = (msg.text or "").strip()
     args = text.split(maxsplit=2)
@@ -360,88 +299,49 @@ async def announce_winner_cmd(msg: Message):
         ticket = q.scalar_one_or_none()
         if not ticket:
             return await msg.reply("Ticket code not found.")
-        # log winner
-        await db.execute(insert(Winner).values(
-            ticket_code=ticket_code,
-            user_id=ticket.user_id,
-            announced_by=str(msg.from_user.id),
-            notes=notes,
-        ))
+        await db.execute(insert(Winner).values(ticket_code=ticket_code, user_id=ticket.user_id, announced_by=str(msg.from_user.id), notes=notes))
         await db.commit()
-        # get user info
         q = await db.execute(select(User).where(User.id == ticket.user_id))
         user = q.scalar_one()
     announce_text = (
         f"🏆 <b>WINNER ANNOUNCEMENT</b>\n\n"
         f"Winner ticket: <b>{ticket_code}</b>\n"
         f"Winner Telegram: <a href=\"tg://user?id={user.telegram_id}\">{user.username or user.telegram_id}</a>\n\n"
-        f"Announced by admin.\n\nTransparency: each draw is handled manually and logged."
+        f"Announced by admin."
     )
-    # try announce in channel
     try:
-        await bot.send_message(CHANNEL_USERNAME, announce_text, parse_mode="HTML")
+        await router.bot.send_message(CHANNEL_USERNAME, announce_text, parse_mode="HTML")
     except Exception:
         pass
-    # DM winner
     try:
-        await bot.send_message(int(user.telegram_id), f"🎉 Congratulations! You won with ticket {ticket_code}!\n\nAdmin notes: {notes}")
+        await router.bot.send_message(int(user.telegram_id), f"🎉 Congratulations! You won with ticket {ticket_code}!\n\nAdmin notes: {notes}")
     except Exception:
         pass
-
     await msg.reply("Winner announced and logged.", reply_markup=main_menu())
 
 @router.message(Command("draw_reset"))
 async def draw_reset_cmd(msg: Message):
-    """Admin command to wipe all ticket rows (after draw)."""
-    if not is_admin(msg.from_user.id):
+    if not _is_admin(msg.from_user.id):
         return await msg.reply("Unauthorized.")
     async with async_session() as db:
         await db.execute(delete(Ticket))
         await db.commit()
-    await msg.answer("✅ All tickets have been reset (deleted).")
+    await msg.answer("✅ All tickets have been reset (deleted).", reply_markup=main_menu())
 
-# -------------------------
-# Inline callbacks: my_tickets, referral, help
-# -------------------------
-@router.callback_query(F.data == "my_tickets")
-async def cb_my_tickets(cb: CallbackQuery):
-    await tickets_cmd(cb.message)
-
-@router.callback_query(F.data == "referral")
-async def cb_referral(cb: CallbackQuery):
-    link = referral_link(BOT_USERNAME, cb.from_user.id)
-    await cb.message.answer(f"Share this link to invite friends:\n{link}", reply_markup=main_menu())
-    await cb.answer()
-
-@router.callback_query(F.data == "help_btn")
-async def cb_help(cb: CallbackQuery):
-    await cb.message.answer(
-        "Use /help to see available commands.",
-        reply_markup=main_menu(),
-        parse_mode=None
-    )
-    await cb.answer()
-
-
-
-# -------------------------
-# Fallback
-# -------------------------
+# Fallback - if message not matched above and not a number-handled by numeric_purchase_handler,
+# show menu
 @router.message()
 async def fallback(message: Message):
+    # ignore if message is a digit (handled above)
+    txt = (message.text or "").strip()
+    if txt.isdigit():
+        return
     await message.answer("Use the menu or /help", reply_markup=main_menu())
 
-# ============================================================
-# REGISTER HANDLERS FOR MAIN.PY
-# ============================================================
-
+# Register router safely
 def register_handlers(dp: Dispatcher):
-    """
-    Safely register router ONLY once.
-    """
     try:
         dp.include_router(router)
     except RuntimeError:
-        # Router was already attached; ignore silently
+        # router already attached — ignore
         pass
-
