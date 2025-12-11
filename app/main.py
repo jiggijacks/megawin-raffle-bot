@@ -20,44 +20,34 @@ async def startup():
     # Initialize database
     await init_db()
 
-    # Initialize bot & dispatcher
+    # Create bot and dispatcher
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # Make bot & dispatcher globally available for webhook
+    # Store bot & dp in global state
     app.state.bot = bot
     app.state.dp = dp
 
-    # Inject bot inside app.bot
+    # Inject bot into app.bot
     import app.bot as bot_module
     bot_module.bot = bot
 
-    # Register handlers without re-importing to avoid circular import
-    bot_module.register_handlers(dp)
+    # Register all handlers
+    from app.bot import register_handlers
+    register_handlers(dp)
 
-    # This MUST run or /commands will never fire
-    await dp.startup()
-    print("✔ Dispatcher started.")
+    print("✔ Router loaded. No manual dp.startup() needed for webhooks.")
 
 
+# Shutdown
 @app.on_event("shutdown")
 async def shutdown():
-    dp = getattr(app.state, "dp", None)
-    if dp:
-        await dp.shutdown()
-
-    bot = getattr(app.state, "bot", None)
-    if bot:
-        # ensure the bot's aiohttp session is closed
-        try:
-            await bot.close()
-        except Exception:
-            pass
-
-    print("✔ Dispatcher shutdown.")
+    bot = app.state.bot
+    await bot.session.close()
+    print("✔ Bot session closed.")
 
 
-# Mount webhooks
+# Attach routers
 app.include_router(telegram_router)
 app.include_router(paystack_router)
 
