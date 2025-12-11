@@ -22,7 +22,7 @@ async def startup():
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # store in app.state so routers can access
+    # expose in app.state early so webhook can access
     app.state.bot = bot
     app.state.dp = dp
 
@@ -30,13 +30,20 @@ async def startup():
     try:
         import app.bot as bot_module
         bot_module.bot = bot
-    except Exception:
-        # not fatal, some layouts may not import it
-        pass
+    except Exception as e:
+        print("Warning: could not set bot in app.bot:", e)
 
     # register handlers (router) in bot module
     from app.bot import register_handlers
     register_handlers(dp)
+
+    # run dispatcher startup lifecycle (register middlewares, filters, etc.)
+    try:
+        await dp.startup()
+        print("Dispatcher startup complete.")
+    except Exception as e:
+        print("Dispatcher startup failed:", e)
+
 
 
 # include routers
