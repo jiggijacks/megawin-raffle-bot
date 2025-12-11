@@ -1,23 +1,22 @@
 from fastapi import APIRouter, Request
-from aiogram import types
+from aiogram.types import Update
+from app.main import app
 
-router = APIRouter()
+router = APIRouter(prefix="/webhook")
 
-@router.post("/webhook/telegram")
+@router.post("/telegram")
 async def telegram_webhook(request: Request):
-    bot = request.app.state.bot
-    dp = request.app.state.dp
+    data = await request.json()
 
     try:
-        body = await request.json()
-        update = types.Update.de_json(body)
+        update = Update.model_validate(data)
     except Exception as e:
         print("❌ Webhook parse error:", e)
-        return {"ok": False}
+        print("Payload:", data)
+        return {"ok": True}
 
-    try:
-        await dp.process_update(update)
-    except Exception as e:
-        print("❌ Update Handling Error:", e)
+    bot = app.state.bot
+    dp  = app.state.dp
 
+    await dp.feed_update(bot, update)
     return {"ok": True}
