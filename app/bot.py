@@ -417,5 +417,12 @@ async def fallback(msg: Message):
 # ============================================================
 #                     REGISTER ROUTER
 # ============================================================
-def register_handlers(dp: Dispatcher):
-    dp.include_router(router)
+def register_handlers(dp):
+    """
+    Safely register router only once.
+    """
+    try:
+        dp.include_router(router)
+    except RuntimeError:
+        # router already attached
+        pass

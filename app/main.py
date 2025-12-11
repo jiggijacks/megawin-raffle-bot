@@ -8,42 +8,45 @@ from app.database import init_db
 from app.routers.webhooks import router as telegram_router
 from app.routers.paystack_webhook import router as paystack_router
 
-# Use config or env
 TOKEN = os.getenv("BOT_TOKEN", "")
 
 app = FastAPI(title="Raffle Bot API")
 
+
 @app.on_event("startup")
 async def startup():
-    # create tables
+    # create DB tables
     await init_db()
 
-    # create bot and dispatcher
+    # create global bot + dispatcher
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # expose in app.state early so webhook can access
+    # store bot + dp so webhook handlers can access them
     app.state.bot = bot
     app.state.dp = dp
 
-    # also expose bot variable to the bot module (some handlers call bot.*)
+    # inject bot into app.bot module so handlers that call `bot.send_message` work
     try:
         import app.bot as bot_module
         bot_module.bot = bot
+    except Exception:
+        # not fatal: register_handlers will still attach handlers
+        pass
+
+    # register handlers (attach router to dispatcher)
+    # we call register_handlers which safely includes the router (idempotent)
+    try:
+        from app.bot import register_handlers
+        register_handlers(dp)
     except Exception as e:
-        print("Warning: could not set bot in app.bot:", e)
+        print("Failed to register handlers:", e)
 
-    # register handlers (router) in bot module
-    from app.bot import register_handlers
-    register_handlers(dp)
-
-    # run dispatcher startup lifecycle (register middlewares, filters, etc.)
+    # start dispatcher lifecycle (optional; safe if aiogram needs startup)
     try:
         await dp.startup()
-        print("Dispatcher startup complete.")
     except Exception as e:
-        print("Dispatcher startup failed:", e)
-
+        print("Dispatcher startup error:", e)
 
 
 # include routers
