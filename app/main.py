@@ -15,45 +15,39 @@ app = FastAPI(title="Raffle Bot API")
 
 @app.on_event("startup")
 async def startup():
-    # create DB tables
+    print("🔄 Starting application...")
+
+    # Initialize DB
     await init_db()
 
-    # create global bot + dispatcher
+    # Initialize bot + dispatcher
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # store bot + dp so webhook handlers can access them
+    # Store globally
     app.state.bot = bot
     app.state.dp = dp
 
-    # inject bot into app.bot module so handlers that call `bot.send_message` work
+    # Inject bot into bot.py so handlers can use send_message()
     try:
         import app.bot as bot_module
         bot_module.bot = bot
-    except Exception:
-        # not fatal: register_handlers will still attach handlers
-        pass
-
-    # register handlers (attach router to dispatcher)
-    # we call register_handlers which safely includes the router (idempotent)
-    try:
-        from app.bot import register_handlers
-        register_handlers(dp)
+        print("✔ Bot injected into app.bot")
     except Exception as e:
-        print("Failed to register handlers:", e)
+        print("❌ Failed injecting bot:", e)
 
-    # start dispatcher lifecycle (optional; safe if aiogram needs startup)
-    try:
-        await dp.startup()
-    except Exception as e:
-        print("Dispatcher startup error:", e)
+    # Register handlers
+    from app.bot import register_handlers
+    register_handlers(dp)
+
+    print("🚀 Dispatcher & Handlers Loaded")
 
 
-# include routers
+# Register webhook routers
 app.include_router(telegram_router)
 app.include_router(paystack_router)
 
 
 @app.get("/")
 async def root():
-    return {"status": "OK", "bot": "running"}
+    return {"status": "OK", "message": "Bot is running"}

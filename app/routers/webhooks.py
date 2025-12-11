@@ -3,34 +3,26 @@ from aiogram import types
 
 router = APIRouter()
 
-
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    """
-    Receive Telegram updates and feed them into aiogram Dispatcher.
-    Uses types.Update.model_validate to avoid BaseModel positional error.
-    """
+    """Receive Telegram updates and pass them to Aiogram dispatcher."""
     try:
-        body = await request.json()
-    except Exception:
-        return {"ok": False, "error": "invalid json"}
+        data = await request.json()
+    except:
+        return {"ok": False, "error": "Invalid JSON"}
 
     bot = request.app.state.bot
     dp = request.app.state.dp
 
     try:
-        # pydantic v2 style model validate
-        update = types.Update.model_validate(body)
+        update = types.Update(**data)
     except Exception as e:
-        print("Update parse error:", e)
-        return {"ok": False, "error": "update parse error"}
+        print("❌ Update Parse Error:", e)
+        return {"ok": False}
 
     try:
-        # feed update to dispatcher
         await dp.feed_update(bot, update)
     except Exception as e:
-        # don't crash; return 200 so Telegram stops retrying excessively
-        print("Handler error:", e)
-        return {"ok": False, "error": "handler crashed"}
+        print("❌ Handler Error:", e)
 
     return {"ok": True}
