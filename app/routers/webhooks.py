@@ -1,22 +1,24 @@
 from fastapi import APIRouter, Request
 from aiogram.types import Update
-from app.main import app
 
-router = APIRouter(prefix="/webhook")
+router = APIRouter()
 
-@router.post("/telegram")
+@router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     data = await request.json()
 
+    # Parse incoming Telegram Update
     try:
         update = Update.model_validate(data)
     except Exception as e:
         print("❌ Webhook parse error:", e)
         print("Payload:", data)
-        return {"ok": True}
+        return {"ok": True}  # prevent Telegram retries
 
-    bot = app.state.bot
-    dp  = app.state.dp
+    bot = request.app.state.bot
+    dp = request.app.state.dp
 
+    # Pass update to Aiogram
     await dp.feed_update(bot, update)
+
     return {"ok": True}
