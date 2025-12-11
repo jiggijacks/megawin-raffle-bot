@@ -15,39 +15,53 @@ app = FastAPI(title="Raffle Bot API")
 
 @app.on_event("startup")
 async def startup():
-    print("🔄 Starting application...")
+    print("🔄 Starting bot...")
 
-    # Initialize DB
+    # Initialize database
     await init_db()
 
-    # Initialize bot + dispatcher
+    # Initialize bot & dispatcher
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # Store globally
+    # Make bot & dispatcher globally available for webhook
     app.state.bot = bot
     app.state.dp = dp
 
-    # Inject bot into bot.py so handlers can use send_message()
-    try:
-        import app.bot as bot_module
-        bot_module.bot = bot
-        print("✔ Bot injected into app.bot")
-    except Exception as e:
-        print("❌ Failed injecting bot:", e)
+    # Inject bot inside app.bot
+    import app.bot as bot_module
+    bot_module.bot = bot
 
-    # Register handlers
-    from app.bot import register_handlers
-    register_handlers(dp)
+    # Register handlers without re-importing to avoid circular import
+    bot_module.register_handlers(dp)
 
-    print("🚀 Dispatcher & Handlers Loaded")
+    # This MUST run or /commands will never fire
+    await dp.startup()
+    print("✔ Dispatcher started.")
 
 
-# Register webhook routers
+@app.on_event("shutdown")
+async def shutdown():
+    dp = getattr(app.state, "dp", None)
+    if dp:
+        await dp.shutdown()
+
+    bot = getattr(app.state, "bot", None)
+    if bot:
+        # ensure the bot's aiohttp session is closed
+        try:
+            await bot.close()
+        except Exception:
+            pass
+
+    print("✔ Dispatcher shutdown.")
+
+
+# Mount webhooks
 app.include_router(telegram_router)
 app.include_router(paystack_router)
 
 
 @app.get("/")
 async def root():
-    return {"status": "OK", "message": "Bot is running"}
+    return {"status": "running"}
