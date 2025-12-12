@@ -1,69 +1,56 @@
-from fastapi import APIRouter, Request, HTTPException
+# app/routers/paystack_webhook.py
+from fastapi import APIRouter, Request, Header, HTTPException
 from app.paystack import verify_payment
 from app.database import async_session, RaffleEntry, Ticket, Transaction, User
 from app.utils import generate_ticket_code
 from sqlalchemy import select, insert
-from sqlalchemy.exc import NoResultFound
 
 router = APIRouter()
 
-
 @router.post("/webhook/paystack")
-async def paystack_webhook(request: Request):
+async def paystack_webhook(request: Request, x_paystack_signature: str | None = Header(None)):
     """
-    Paystack webhook handler that verifies transaction and issues tickets.
+    Very small Paystack webhook handler.
+    - Verifies the reference with Paystack API
+    - If successful, creates Transaction + Ticket rows and notifies user via Telegram bot
     """
     payload = await request.json()
-
-    # extract reference from typical event structure
-    data = payload.get("data", {}) or {}
+    data = payload.get("data") or {}
     reference = data.get("reference") or payload.get("reference")
     if not reference:
         raise HTTPException(status_code=400, detail="no reference")
 
-    # verify with Paystack
+    # Verify using Paystack API
     try:
-        verification = await verify_payment(reference)
+        verified = await verify_payment(reference)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"verification failed: {e}")
+        raise HTTPException(status_code=502, detail=f"paystack verify failed: {e}")
 
-    if not verification.get("status"):
-        # verification API call itself failed
-        return {"ok": False, "reason": "verification API returned non-OK"}
+    status = verified.get("data", {}).get("status")
+    if status != "success":
+        return {"ok": False, "reason": "not successful", "status": status}
 
-    tx = verification.get("data", {}) or {}
-    if tx.get("status") != "success":
-        # transaction not successful
-        return {"ok": False, "status": tx.get("status")}
+    # find raffle entry by reference (or fallback by email)
+    email = verified.get("data", {}).get("customer", {}).get("email", "")
+    metadata = verified.get("data", {}).get("metadata", {}) or {}
+    tg_user_id = metadata.get("tg_user_id")
 
-    # get metadata (we stored user_id, tickets in create_paystack_payment)
-    metadata = tx.get("metadata") or {}
-    metadata_user_id = metadata.get("user_id")
-    metadata_tickets = int(metadata.get("tickets") or 0)
-
-    # attempt to find the raffle entry by reference
     async with async_session() as db:
         q = await db.execute(select(RaffleEntry).where(RaffleEntry.reference == reference))
         entry = q.scalar_one_or_none()
 
-        # fallback: if not found, try to locate by metadata user_id and latest unconfirmed entry
-        if not entry and metadata_user_id:
-            q = await db.execute(select(User).where(User.id == int(metadata_user_id)))
+        if not entry and email:
+            q = await db.execute(select(User).where(User.email == email))
             user = q.scalar_one_or_none()
             if user:
-                q = await db.execute(
-                    select(RaffleEntry)
-                    .where(RaffleEntry.user_id == user.id)
-                    .order_by(RaffleEntry.created_at.desc())
-                )
+                q = await db.execute(select(RaffleEntry).where(RaffleEntry.user_id == user.id).order_by(RaffleEntry.created_at.desc()))
                 entry = q.scalar_one_or_none()
 
         if not entry:
-            # nothing to process
-            return {"ok": False, "reason": "no_matching_entry"}
+            return {"ok": False, "reason": "no raffle entry"}
 
         if entry.confirmed:
-            return {"ok": True, "processed": False, "reason": "already_confirmed"}
+            return {"ok": True, "processed": False, "reason": "already confirmed"}
 
         # create Transaction row
         await db.execute(insert(Transaction).values(
@@ -72,10 +59,9 @@ async def paystack_webhook(request: Request):
             reference=entry.reference
         ))
 
-        # create tickets (quantity from entry)
+        # create ticket rows
         created_codes = []
-        qty = entry.quantity or metadata_tickets or 1
-        for _ in range(qty):
+        for _ in range(entry.quantity or 1):
             code = generate_ticket_code()
             # ensure unique
             while True:
@@ -86,29 +72,23 @@ async def paystack_webhook(request: Request):
             await db.execute(insert(Ticket).values(user_id=entry.user_id, code=code))
             created_codes.append(code)
 
-        # mark entry as confirmed
-        await db.execute(
-            RaffleEntry.__table__.update().where(RaffleEntry.id == entry.id).values(confirmed=True)
-        )
-
+        # mark raffle entry confirmed
+        await db.execute(RaffleEntry.__table__.update().where(RaffleEntry.id == entry.id).values(confirmed=True))
         await db.commit()
 
-        # notify user (try)
+        # notify user on Telegram (use bot from app.state)
         try:
+            bot = request.app.state.bot
+            # fetch user
             q = await db.execute(select(User).where(User.id == entry.user_id))
-            user = q.scalar_one_or_none()
-            if user:
-                # send DM
-                try:
-                    await request.app.state.bot.send_message(
-                        int(user.telegram_id),
-                        "✅ Payment received — your tickets have been issued:\n\n" +
-                        "\n".join(created_codes)
-                    )
-                except Exception:
-                    # ignore DM failure
-                    pass
-        except Exception:
-            pass
+            user = q.scalar_one()
+            text = (
+                f"✅ Payment confirmed!\n\n"
+                f"You purchased {entry.quantity} ticket(s).\n"
+                f"Your ticket codes:\n" + "\n".join(created_codes)
+            )
+            await bot.send_message(int(user.telegram_id), text)
+        except Exception as e:
+            print("Warning: could not notify user:", e)
 
     return {"ok": True, "codes": created_codes}

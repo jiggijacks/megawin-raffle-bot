@@ -1,18 +1,13 @@
+# app/database.py
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import (
-    Column, Integer, String, Boolean, ForeignKey, Float, DateTime, func
-)
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Float, DateTime, func
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-# sensible default for local dev (sqlite)
 if not DATABASE_URL:
     DATABASE_URL = "sqlite+aiosqlite:///raffle.db"
 
-# force async URL if old-style postgres URL is present (not used for sqlite)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://")
 
@@ -27,25 +22,20 @@ async_session = sessionmaker(
 
 Base = declarative_base()
 
-# MODELS
 class User(Base):
     __tablename__ = "users"
-
     id = Column(Integer, primary_key=True)
     telegram_id = Column(String, unique=True, nullable=False, index=True)
     username = Column(String, nullable=True)
     email = Column(String, unique=True, nullable=True)
     balance = Column(Float, default=0.0)
     created_at = Column(DateTime, default=func.now())
-
     tickets = relationship("Ticket", back_populates="user", cascade="all, delete-orphan")
     raffle_entries = relationship("RaffleEntry", back_populates="user", cascade="all, delete-orphan")
     transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
 
-
 class RaffleEntry(Base):
     __tablename__ = "raffle_entries"
-
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     quantity = Column(Integer, default=0)
@@ -53,52 +43,33 @@ class RaffleEntry(Base):
     reference = Column(String, unique=True, nullable=False, index=True)
     confirmed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())
-
     user = relationship("User", back_populates="raffle_entries")
-
 
 class Ticket(Base):
     __tablename__ = "tickets"
-
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     code = Column(String, unique=True, index=True)
     created_at = Column(DateTime, default=func.now())
-
     user = relationship("User", back_populates="tickets")
-
 
 class Transaction(Base):
     __tablename__ = "transactions"
-
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     amount = Column(Float, nullable=False)
     reference = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime, default=func.now())
-
     user = relationship("User", back_populates="transactions")
-
 
 class Winner(Base):
     __tablename__ = "winners"
-
     id = Column(Integer, primary_key=True)
     ticket_code = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     announced_by = Column(String, nullable=True)
     notes = Column(String, nullable=True)
     announced_at = Column(DateTime, default=func.now())
-
-
-# helpers
-async def get_db():
-    async with async_session() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
-
 
 async def init_db():
     async with engine.begin() as conn:
