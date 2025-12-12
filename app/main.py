@@ -1,42 +1,66 @@
 import os
+import asyncio
 from fastapi import FastAPI
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.database import init_db
-from app.routers.webhooks import router as telegram_router
-from app.routers.paystack_webhook import router as paystack_router
 
-TOKEN = os.getenv("BOT_TOKEN", "")
+bot = None
+dp = None
 
 app = FastAPI(title="Raffle Bot API")
 
-@app.on_event("startup")
-async def startup():
+
+# ----------------------------------------------------------
+#   START AIROGRAM BOT BEFORE FASTAPI STARTUP
+# ----------------------------------------------------------
+async def start_bot():
+    global bot, dp
+
     print("🔄 Starting bot...")
 
-    await init_db()
+    from app.bot import register_handlers
 
+    TOKEN = os.getenv("BOT_TOKEN", "")
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # Store globally
+    # Register handlers
+    register_handlers(dp)
+
+    print("✔ Handlers registered. Bot ready for webhook.")
+    return bot, dp
+
+
+# ----------------------------------------------------------
+#   FASTAPI STARTUP
+# ----------------------------------------------------------
+@app.on_event("startup")
+async def startup():
+    global bot, dp
+
+    print("🚀 Initializing database...")
+    await init_db()
+
+    # Start Aiogram manually before FastAPI accepts webhooks
+    if bot is None or dp is None:
+        bot, dp = await start_bot()
+
+    # Attach to app.state for webhook
     app.state.bot = bot
     app.state.dp = dp
 
-    # inject bot into app.bot
-    import app.bot as bot_module
-    bot_module.bot = bot
-
-    # register all handlers
-    from app.bot import register_handlers
-    register_handlers(dp)
-
-    print("✔ Router loaded. No manual dp.startup() needed for webhooks.")
+    print("✔ FastAPI & Aiogram fully initialized.")
 
 
-# Attach routers
+# ----------------------------------------------------------
+#   WEBHOOK ROUTES
+# ----------------------------------------------------------
+from app.routers.webhooks import router as telegram_router
+from app.routers.paystack_webhook import router as paystack_router
+
 app.include_router(telegram_router)
 app.include_router(paystack_router)
 
