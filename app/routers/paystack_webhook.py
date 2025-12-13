@@ -2,7 +2,9 @@ from fastapi import APIRouter, Request, HTTPException
 from sqlalchemy import select, insert
 import os
 
-from app.database import async_session, User, Ticket, RaffleEntry, Transaction
+from app.database import async_session
+from app.models import User, Ticket, RaffleEntry, Transaction
+
 from app.paystack import verify_payment
 from app.utils import generate_ticket_code
 
