@@ -1,42 +1,12 @@
-import os
-from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    AsyncSession,
-    async_sessionmaker,
-)
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-
-# ============================================================
-#                      DATABASE CONFIG
-# ============================================================
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite+aiosqlite:///./raffle.db"
-)
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    future=True
-)
-
-async_session = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False
-)
+from app.config import DATABASE_URL
 
 Base = declarative_base()
 
+engine = create_async_engine(DATABASE_URL, echo=False)
+async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-# ============================================================
-#                   INIT DB (STARTUP)
-# ============================================================
 async def init_db():
-    """
-    Create tables if they don't exist
-    """
-    from app import models  # ⬅ lazy import avoids circular errors
-
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
