@@ -1,33 +1,16 @@
-# app/routers/webhooks.py
 from fastapi import APIRouter, Request
-from aiogram import types
+from aiogram.types import Update
 
 router = APIRouter()
 
+
 @router.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        return {"ok": False, "error": "invalid json"}
+    data = await request.json()
+    update = Update.model_validate(data)
 
-    bot = request.app.state.bot
     dp = request.app.state.dp
+    bot = request.app.state.bot
 
-    # try pydantic model validate first (aiogram v3)
-    try:
-        update = types.Update.model_validate(body)
-    except Exception:
-        try:
-            update = types.Update(**body)
-        except Exception as e:
-            print("❌ Update parse error:", e)
-            return {"ok": False, "error": "update parse error"}
-
-    try:
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        print("❌ Handler error:", e)
-        return {"ok": False, "error": "handler crashed", "detail": str(e)}
-
+    await dp.feed_update(bot, update)
     return {"ok": True}

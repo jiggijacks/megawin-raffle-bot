@@ -1,39 +1,36 @@
-# app/utils.py
 import random
 import string
-from typing import Optional
+import uuid
 
-# Cost per ticket (₦)
+# 🎟 Ticket price (₦)
 TICKET_PRICE = 500
 
-# ---------- reference generator ----------
-def generate_reference() -> str:
-    """Short Paystack-like reference for transactions."""
-    return "REF_" + "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
 
-# ---------- ticket code ----------
+# ============================================================
+#                    TICKET CODE
+# ============================================================
 def generate_ticket_code() -> str:
-    """Generate ticket code in '#A1Z286' style."""
-    prefix = random.choice(string.ascii_uppercase)
-    mid = "".join(random.choices(string.ascii_uppercase + string.digits, k=2))
-    nums = "".join(random.choices(string.digits, k=3))
-    return f"#{prefix}{mid}{nums}"
-
-# ---------- referral link ----------
-def referral_link(bot_username_or_name: Optional[str], user_id: int) -> str:
     """
-    Create referral link.
-    Accepts either full bot username ('MegaWinRaffleBot' or '@MegaWinRaffleBot')
-    or None (fallback to 'MegaWinRaffleBot').
+    Generates a unique raffle ticket code
+    Example: MW-8F3A2C
     """
-    bot_name = bot_username_or_name or "MegaWinRaffleBot"
-    # strip leading @ if present; telegram t.me links don't use the @
-    bot_name = bot_name.lstrip("@")
-    return f"https://t.me/{bot_name}?start=ref_{user_id}"
+    return "MW-" + "".join(
+        random.choices(string.ascii_uppercase + string.digits, k=6)
+    )
 
-async def handle_telegram_update(data: dict):
-    try:
-        update = Update.model_validate(data)
-        await dp.feed_update(bot, update)
-    except Exception:
-        traceback.print_exc()
+
+# ============================================================
+#                 PAYSTACK REFERENCE
+# ============================================================
+def generate_reference() -> str:
+    """
+    Unique payment reference for Paystack
+    """
+    return f"MW-{uuid.uuid4().hex[:12].upper()}"
+
+
+# ============================================================
+#                 REFERRAL LINK
+# ============================================================
+def referral_link(bot_username: str, user_id: int) -> str:
+    return f"https://t.me/{bot_username}?start=ref_{user_id}"

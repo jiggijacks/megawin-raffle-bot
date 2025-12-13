@@ -1,8 +1,7 @@
+aiogram==3.4.1
 fastapi
 uvicorn[standard]
-aiogram==3.0.0b7
-SQLAlchemy
-asyncpg
-aiosqlite
 httpx
+sqlalchemy
+asyncpg
 python-dotenv
