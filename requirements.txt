@@ -4,4 +4,5 @@ uvicorn[standard]
 httpx
 sqlalchemy
 asyncpg
+aiosqlite
 python-dotenv
