@@ -1,37 +1,29 @@
-import os
-from fastapi import FastAPI
+# app/main.py
+import asyncio
+from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
+from aiogram.types import Update
 
-from app.database import init_db
-from app.routers.webhooks import router as telegram_router
-from app.routers.paystack_webhook import router as paystack_router
+from app.config import BOT_TOKEN
 from app.bot import register_handlers
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+app = FastAPI()
 
-app = FastAPI(title="Raffle Bot API")
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# 🔑 THIS LINE FIXES EVERYTHING
+register_handlers(dp)
+
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return {"ok": True}
 
 
 @app.on_event("startup")
-async def startup():
-    await init_db()
-
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-    dp = Dispatcher()
-
-    register_handlers(dp)
-
-    app.state.bot = bot
-    app.state.dp = dp
-
-    print("✅ Bot & Dispatcher ready")
-
-
-app.include_router(telegram_router)
-app.include_router(paystack_router)
-
-
-@app.get("/")
-async def root():
-    return {"status": "OK"}
+async def on_startup():
+    print("✅ Bot started and commands registered")
