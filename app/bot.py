@@ -178,19 +178,6 @@ async def buy_cmd(msg: Message):
     await msg.answer("Choose ticket option:", reply_markup=buy_options_menu())
 
 
-# numeric message handler for custom buy
-@router.message()
-async def numeric_purchase_handler(msg: Message):
-    txt = (msg.text or "").strip()
-    if not txt.isdigit():
-        return  # Let fallback handle non-digit messages
-
-    qty = int(txt)
-    if qty <= 0:
-        await msg.answer("Send a positive number.")
-        return
-
-    await initiate_purchase(msg, msg.from_user.id, qty)
 
 
 # -------------------------
@@ -430,22 +417,20 @@ async def cmd_reset(msg: Message):
 # -------------------------
 @router.message()
 async def fallback(message: Message):
-    # numeric-only messages are handled by numeric_purchase_handler above
-    txt = (message.text or "").strip()
-    if txt.isdigit():
+    if message.text and message.text.startswith("/"):
+        await message.answer(
+            "❌ Unknown command.\n\nUse /help or the menu below.",
+            reply_markup=main_menu()
+        )
         return
-    await message.answer("Use the menu or /help", reply_markup=main_menu())
 
+    await message.answer(
+        "Use the menu below 👇",
+        reply_markup=main_menu()
+    )
 
 # -------------------------
 # Register helpers (called from main.py)
 # -------------------------
 def register_handlers(dp: Dispatcher):
-    """
-    Attach router to dispatcher. Safe to call multiple times.
-    """
-    try:
-        dp.include_router(router)
-    except RuntimeError:
-        # already attached
-        pass
+    dp.include_router(router)
