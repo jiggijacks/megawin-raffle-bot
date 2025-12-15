@@ -1,31 +1,25 @@
 import os
 
-
-# ============================================================
-#                       BOT CONFIG
-# ============================================================
-
+# Telegram
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_USERNAME = os.getenv("BOT_USERNAME", "MegaWinRaffleBot")
 
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN environment variable is missing")
+# Database
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "sqlite+aiosqlite:///./raffle.db"
+)
 
+# Paystack
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
 
-# ============================================================
-#                       ADMINS
-# ============================================================
-
-ADMIN_ID_RAW = os.getenv("ADMIN_ID", "")
-ADMIN_IDS = [
-    int(x.strip())
-    for x in ADMIN_ID_RAW.split(",")
-    if x.strip().isdigit()
-]
-
-
-# ============================================================
-#                       PAYSTACK
-# ============================================================
-
-PAYSTACK_SECRET = os
+# Admin
+ADMIN_IDS = []
+for x in os.getenv("ADMIN_IDS", "").split(","):
+    x = x.strip()
+    if not x:
+        continue
+    try:
+        ADMIN_IDS.append(int(x))
+    except ValueError:
+        continue
