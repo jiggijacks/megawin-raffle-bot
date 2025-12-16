@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse
 import os, httpx
 
 router = APIRouter()
-PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 CURRENCY = os.getenv("CURRENCY", "NGN")
 
 @router.get("/pay/ps")
@@ -15,7 +15,7 @@ async def paystack_create_and_redirect(ref: str = Query(...), tg: str = Query(..
     tg: telegram user id to include in metadata
     amt: amount in kobo (int)
     """
-    if not PAYSTACK_SECRET_KEY:
+    if not PAYSTACK_SECRET:
         raise HTTPException(status_code=500, detail="Paystack not configured")
 
     body = {
@@ -25,7 +25,7 @@ async def paystack_create_and_redirect(ref: str = Query(...), tg: str = Query(..
         "reference": ref,
         "metadata": {"tg_user_id": tg}
     }
-    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
+    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post("https://api.paystack.co/transaction/initialize", json=body, headers=headers)
     if resp.status_code not in (200, 201):
