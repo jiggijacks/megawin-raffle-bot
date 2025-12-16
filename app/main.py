@@ -3,7 +3,8 @@ import asyncio
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
-
+from app.database import engine
+from app.database import Base
 from app.config import BOT_TOKEN
 from app.bot import register_handlers
 
@@ -26,4 +27,10 @@ async def telegram_webhook(request: Request):
 
 @app.on_event("startup")
 async def on_startup():
+    await init_db()
     print("✅ Bot started and commands registered")
+
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    print("✅ Database initialized")
