@@ -161,6 +161,130 @@ async def buy_cmd(msg: Message):
 
 
 # -------------------------
+# Admin Commands
+# -------------------------
+@router.message(Command("stats"))
+async def admin_stats(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.answer("⛔ Admin only")
+
+    async with async_session() as db:
+        users = (await db.execute(select(User))).scalars().all()
+        tickets = (await db.execute(select(Ticket))).scalars().all()
+        entries = (await db.execute(select(RaffleEntry))).scalars().all()
+
+    revenue = sum(e.amount for e in entries)
+    await msg.answer(
+        f"📊 Admin Stats\n\n"
+        f"Users: {len(users)}\n"
+        f"Tickets: {len(tickets)}\n"
+        f"Revenue: ₦{revenue:,}"
+    )
+
+@router.message(Command("stats"))
+async def admin_stats(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.answer("⛔ Admin only")
+
+    async with async_session() as db:
+        users = (await db.execute(select(User))).scalars().all()
+        tickets = (await db.execute(select(Ticket))).scalars().all()
+        entries = (await db.execute(select(RaffleEntry))).scalars().all()
+
+    revenue = sum(e.amount for e in entries)
+    await msg.answer(
+        f"📊 Admin Stats\n\n"
+        f"Users: {len(users)}\n"
+        f"Tickets: {len(tickets)}\n"
+        f"Revenue: ₦{revenue:,}"
+    )
+
+@router.message(Command("broadcast"))
+async def admin_broadcast(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.answer("⛔ Admin only")
+
+    text = msg.text.replace("/broadcast", "").strip()
+    if not text:
+        return await msg.answer("Usage: /broadcast your message")
+
+    async with async_session() as db:
+        users = (await db.execute(select(User))).scalars().all()
+
+    sent = 0
+    for u in users:
+        try:
+            await bot.send_message(int(u.telegram_id), text)
+            sent += 1
+        except Exception:
+            pass
+
+    await msg.answer(f"✅ Broadcast sent to {sent} users")
+
+
+@router.message(Command("announce_winner"))
+async def admin_announce_winner(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.answer("⛔ Admin only")
+
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Usage: /announce_winner TICKET_CODE")
+
+    ticket_code = args[1].upper()
+
+    async with async_session() as db:
+        ticket = (
+            await db.execute(select(Ticket).where(Ticket.code == ticket_code))
+        ).scalar_one_or_none()
+
+        if not ticket:
+            return await msg.answer("❌ Ticket not found")
+
+        await db.execute(
+            insert(Winner).values(
+                ticket_code=ticket.code,
+                user_id=ticket.user_id,
+                announced_by=str(msg.from_user.id),
+            )
+        )
+        await db.commit()
+
+    await msg.answer(f"🏆 Winner announced: {ticket_code}")
+
+
+@router.message(Command("announce_winner"))
+async def admin_announce_winner(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.answer("⛔ Admin only")
+
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Usage: /announce_winner TICKET_CODE")
+
+    ticket_code = args[1].upper()
+
+    async with async_session() as db:
+        ticket = (
+            await db.execute(select(Ticket).where(Ticket.code == ticket_code))
+        ).scalar_one_or_none()
+
+        if not ticket:
+            return await msg.answer("❌ Ticket not found")
+
+        await db.execute(
+            insert(Winner).values(
+                ticket_code=ticket.code,
+                user_id=ticket.user_id,
+                announced_by=str(msg.from_user.id),
+            )
+        )
+        await db.commit()
+
+    await msg.answer(f"🏆 Winner announced: {ticket_code}")
+
+
+# -------------------------
 # Inline Callbacks
 # -------------------------
 @router.callback_query(F.data == "open_buy")
