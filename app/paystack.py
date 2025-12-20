@@ -2,6 +2,15 @@
 import os
 import httpx
 from app.utils import generate_reference
+import hmac
+import hashlib
+import json
+from sqlalchemy import select, insert
+from app.database import async_session
+from app.models import RaffleEntry, Ticket
+from app.utils import  generate_ticket_code, TICKET_PRICE
+from aiogram import Bot
+from app.bot import bot
 
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET", "")
 BASE_URL = os.getenv("PAYSTACK_BASE_URL", "https://api.paystack.co")
@@ -64,3 +73,63 @@ async def verify_payment(reference: str) -> dict:
             headers=HEADERS
         )
         return r.json()
+
+async def verify_paystack_webhook(body, signature):
+
+    # must match header signature
+    expected = hmac.new(
+        PAYSTACK_SECRET.encode(),
+        body,
+        hashlib.sha512
+    ).hexdigest()
+
+    if expected != signature:
+        return "invalid_signature"
+
+    payload = json.loads(body)
+
+    # only accept successful payments
+    if payload["data"]["status"] != "success":
+        return "ignored"
+
+    reference = payload["data"]["reference"]
+
+    async with async_session() as db:
+
+        q = await db.execute(
+            select(RaffleEntry).where(RaffleEntry.reference == reference)
+        )
+        entry = q.scalar_one_or_none()
+
+        if not entry:
+            return "entry_not_found"
+
+        if entry.confirmed:
+            return "already_confirmed"
+
+        # update raffle entry
+        entry.confirmed = True
+        db.add(entry)
+
+        # create ticket(s)
+        tickets = []
+        for _ in range(entry.quantity):
+            ticket = Ticket(
+                user_id=entry.user_id,
+                code=generate_ticket_code()
+            )
+            db.add(ticket)
+            tickets.append(ticket)
+
+        await db.commit()
+
+        # notify user
+        try:
+            await bot.send_message(
+                int(entry.user.telegram_id),
+                f"🎉 Payment confirmed!\nYou received {len(tickets)} tickets."
+            )
+        except:
+            pass
+
+    return "success"
