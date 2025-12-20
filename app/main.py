@@ -1,6 +1,7 @@
 # app/main.py
 import asyncio
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header
+from app.paystack import verify_paystack_webhook
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
 from app.database import engine
@@ -16,6 +17,14 @@ dp = Dispatcher()
 # 🔑 THIS LINE FIXES EVERYTHING
 register_handlers(dp)
 
+@app.post("/webhook/paystack")
+async def paystack_webhook(
+        request: Request,
+        x_paystack_signature: str = Header(None)
+):
+    body = await request.body()
+    result = await verify_paystack_webhook(body, x_paystack_signature)
+    return {"status": result}
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):

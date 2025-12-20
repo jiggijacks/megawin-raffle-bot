@@ -1,95 +1,111 @@
 from fastapi import APIRouter, Request, HTTPException
-from sqlalchemy import select, insert
 import os
+import hmac
+import hashlib
+
+from sqlalchemy import select, insert, update
 
 from app.database import async_session
 from app.models import User, Ticket, RaffleEntry, Transaction
-
 from app.paystack import verify_payment
 from app.utils import generate_ticket_code
+from app.bot import bot
 
-router = APIRouter(prefix="/webhook", tags=["paystack"])
+router = APIRouter(prefix="/webhook/paystack")
 
-BOT = None  # injected from main.py
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET", "")
+PAYSTACK_WEBHOOK_SECRET = os.getenv("PAYSTACK_WEBHOOK_SECRET", "")
 
 
-@router.post("/paystack")
+def verify_signature(payload: bytes, signature: str) -> bool:
+    if not PAYSTACK_WEBHOOK_SECRET:
+        return True  # allow if not set (for testing)
+
+    computed = hmac.new(
+        PAYSTACK_WEBHOOK_SECRET.encode(),
+        payload,
+        hashlib.sha512
+    ).hexdigest()
+    return hmac.compare_digest(computed, signature)
+
+
+@router.post("")
 async def paystack_webhook(request: Request):
-    payload = await request.json()
+    payload = await request.body()
+    signature = request.headers.get("x-paystack-signature", "")
 
-    event = payload.get("event")
-    data = payload.get("data", {})
+    if not verify_signature(payload, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
-    if event != "charge.success":
+    data = await request.json()
+
+    if data.get("event") != "charge.success":
         return {"status": "ignored"}
 
-    reference = data.get("reference")
-    metadata = data.get("metadata", {})
-    tg_user_id = metadata.get("tg_user_id")
+    reference = data["data"]["reference"]
 
-    if not reference or not tg_user_id:
-        raise HTTPException(status_code=400, detail="Invalid metadata")
+    # Verify payment again with Paystack
+    verification = await verify_payment(reference)
+    if not verification.get("status"):
+        return {"status": "verification_failed"}
 
-    # 🔎 Verify payment with Paystack
-    verify = await verify_payment(reference)
-    if not verify.get("status"):
-        raise HTTPException(status_code=400, detail="Payment verification failed")
-
-    amount = verify["data"]["amount"] // 100
+    pay_data = verification["data"]
+    amount = pay_data["amount"] // 100
+    email = pay_data["customer"]["email"]
+    tg_user_id = pay_data.get("metadata", {}).get("tg_user_id")
 
     async with async_session() as db:
-        # Get raffle entry
         q = await db.execute(
             select(RaffleEntry).where(RaffleEntry.reference == reference)
         )
         entry = q.scalar_one_or_none()
 
         if not entry or entry.confirmed:
-            return {"status": "already processed"}
+            return {"status": "already_processed"}
+
+        # Confirm entry
+        await db.execute(
+            update(RaffleEntry)
+            .where(RaffleEntry.id == entry.id)
+            .values(confirmed=True)
+        )
 
         # Get user
-        q = await db.execute(
-            select(User).where(User.telegram_id == str(tg_user_id))
-        )
+        q = await db.execute(select(User).where(User.id == entry.user_id))
         user = q.scalar_one()
 
-        # 🎟 Create tickets
+        # Issue tickets
         tickets = []
         for _ in range(entry.quantity):
             code = generate_ticket_code()
-            tickets.append(
-                {
-                    "user_id": user.id,
-                    "code": code,
-                }
-            )
-
-        await db.execute(insert(Ticket), tickets)
-
-        # 💾 Save transaction
-        await db.execute(
-            insert(Transaction).values(
+            tickets.append(code)
+            await db.execute(insert(Ticket).values(
                 user_id=user.id,
-                reference=reference,
-                amount=amount,
-                status="success",
-            )
-        )
+                code=code
+            ))
 
-        # ✅ Mark raffle entry confirmed
-        entry.confirmed = True
+        # Save transaction
+        await db.execute(insert(Transaction).values(
+            user_id=user.id,
+            reference=reference,
+            amount=amount,
+            status="success"
+        ))
+
         await db.commit()
 
-    # 📢 Notify user on Telegram
+    # Notify user on Telegram
     try:
-        await BOT.send_message(
-            int(tg_user_id),
-            f"✅ Payment confirmed!\n\n"
-            f"🎟 Tickets issued: {entry.quantity}\n"
-            f"💰 Amount: ₦{amount:,}\n\n"
-            f"Good luck 🍀"
-        )
+        if bot:
+            await bot.send_message(
+                int(user.telegram_id),
+                "✅ <b>Payment Confirmed!</b>\n\n"
+                f"🎟 Tickets issued: {entry.quantity}\n"
+                f"💳 Amount: ₦{amount:,}\n\n"
+                "Good luck 🍀",
+                parse_mode="HTML"
+            )
     except Exception as e:
         print("Telegram notify failed:", e)
 
-    return {"status": "success"}
+    return {"status": "ok"}
