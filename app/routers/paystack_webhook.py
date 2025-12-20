@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, HTTPException
 import os
 import hmac
 import hashlib
+import json
 
 from sqlalchemy import select, insert, update
 
@@ -37,7 +38,11 @@ async def paystack_webhook(request: Request):
     if not verify_signature(payload, signature):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    data = await request.json()
+    try:
+        data = json.loads(payload)
+    except Exception:
+        # fallback in case body parsing fails
+        data = await request.json()
 
     if data.get("event") != "charge.success":
         return {"status": "ignored"}
@@ -95,6 +100,8 @@ async def paystack_webhook(request: Request):
         await db.commit()
 
     # Notify user on Telegram
+
+    
     try:
         if bot:
             await bot.send_message(

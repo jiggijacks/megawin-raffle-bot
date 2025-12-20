@@ -23,7 +23,7 @@ async def paystack_webhook(
         x_paystack_signature: str = Header(None)
 ):
     body = await request.body()
-    result = await verify_paystack_webhook(body, x_paystack_signature)
+    result = verify_paystack_webhook(body, x_paystack_signature)
     return {"status": result}
 
 @app.post("/webhook/telegram")
