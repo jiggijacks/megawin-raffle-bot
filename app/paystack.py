@@ -12,6 +12,30 @@ from app.utils import generate_ticket_code
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 PAYSTACK_WEBHOOK_SECRET = os.getenv("PAYSTACK_WEBHOOK_SECRET")
 
+async def init_paystack_payment(email, amount, reference):
+    url = "https://api.paystack.co/transaction/initialize"
+
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "email": email,
+        "amount": int(amount * 100),
+        "reference": reference,
+        "callback_url": "https://t.me/MegaWinRaffleBot"
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(url, json=payload, headers=headers)
+
+    data = r.json()
+
+    if not data["status"]:
+        raise Exception("Paystack payment init failed")
+
+    return data["data"]["authorization_url"]
 
 async def verify_paystack_webhook(request: Request):
     # Extract payload
