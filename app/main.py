@@ -8,6 +8,10 @@ from app.database import engine
 from app.database import Base
 from app.config import BOT_TOKEN
 from app.bot import register_handlers
+from routers.paystack_webhook import router as paystack_webhook
+
+app.include_router(paystack_webhook, prefix="/webhook/paystack")
+
 
 app = FastAPI()
 
@@ -18,13 +22,12 @@ dp = Dispatcher()
 register_handlers(dp)
 
 @app.post("/webhook/paystack")
-async def paystack_webhook(
-        request: Request,
-        x_paystack_signature: str = Header(None)
-):
+async def paystack_webhook(request: Request):
+    return await verify_paystack_webhook(request)
+
     body = await request.body()
     result = verify_paystack_webhook(body, x_paystack_signature)
-    return {"status": result}
+    return {"status": result} 
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
