@@ -1,16 +1,15 @@
 # app/main.py
+
 import asyncio
-from fastapi import FastAPI, Request, Header
-from app.paystack import verify_paystack_webhook
+from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
-from app.database import engine
-from app.database import Base
-from app.config import BOT_TOKEN
-from app.bot import register_handlers
-from routers.paystack_webhook import router as paystack_webhook
 
-app.include_router(paystack_webhook, prefix="/webhook/paystack")
+from app.config import BOT_TOKEN
+from app.database import engine, Base
+from app.bot import register_handlers
+from app.paystack import verify_paystack_webhook
+from app.paystack import paystack_webhook_handler
 
 
 app = FastAPI()
@@ -18,16 +17,14 @@ app = FastAPI()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# 🔑 THIS LINE FIXES EVERYTHING
+# load telegram command handlers
 register_handlers(dp)
+
 
 @app.post("/webhook/paystack")
 async def paystack_webhook(request: Request):
-    return await verify_paystack_webhook(request)
+    return await paystack_webhook_handler(request)
 
-    body = await request.body()
-    result = verify_paystack_webhook(body, x_paystack_signature)
-    return {"status": result} 
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
@@ -40,9 +37,10 @@ async def telegram_webhook(request: Request):
 @app.on_event("startup")
 async def on_startup():
     await init_db()
-    print("✅ Bot started and commands registered")
+    print("✅ Bot started")
+
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print("✅ Database initialized")
+    print("✅ Database ready")

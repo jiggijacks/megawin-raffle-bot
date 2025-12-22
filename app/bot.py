@@ -2,6 +2,9 @@
 import os
 import asyncio
 from typing import Optional
+from weakref import ref
+
+from app.payments import create_paystack_payment
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
@@ -17,7 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.database import async_session
 from app.models import User, Ticket, RaffleEntry, Transaction, Winner
-from app.paystack import create_paystack_payment
+
 from app.utils import referral_link, TICKET_PRICE
 
 router = Router()
