@@ -1,74 +1,95 @@
-import hashlib
+# app/paystack.py
+import os
 import hmac
-import json
+import hashlib
 from fastapi import Request, HTTPException
+from sqlalchemy import select, update, insert
+
 from app.database import async_session
 from app.models import User, RaffleEntry, Ticket
-from sqlalchemy import select, update
-from app.bot import bot
-import os
+from aiogram import Bot
 
+# 🔐 Paystack live secret key
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
+if not PAYSTACK_SECRET:
+    raise RuntimeError("PAYSTACK_SECRET not set")
+
+# 🤖 Telegram bot (NO circular overwrite)
+bot = Bot(token=os.getenv("BOT_TOKEN"))
 
 
 async def verify_paystack_webhook(request: Request):
+    """
+    Paystack webhook endpoint
+    URL: /webhook/paystack
+    """
 
-    # Raw body for hashing
-    body_bytes = await request.body()
-
-    # Signature from header
+    body = await request.body()
     signature = request.headers.get("x-paystack-signature")
 
     if not signature:
         raise HTTPException(status_code=400, detail="Missing signature")
 
-    # Hash using LIVE SECRET KEY  
+    # ✅ Verify signature using LIVE SECRET KEY
     computed = hmac.new(
-        PAYSTACK_SECRET.encode('utf-8'),
-        body_bytes,
+        PAYSTACK_SECRET.encode(),
+        body,
         hashlib.sha512
     ).hexdigest()
 
-    if computed != signature:
+    if not hmac.compare_digest(computed, signature):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    data = await request.json()
+    payload = await request.json()
 
-    if data["event"] != "charge.success":
+    # Ignore non-success events
+    if payload.get("event") != "charge.success":
         return {"status": "ignored"}
 
-    ref = data["data"]["reference"]
+    reference = payload["data"]["reference"]
 
-    # Find unpaid entry
     async with async_session() as db:
-        q = await db.execute(select(RaffleEntry).where(
-            RaffleEntry.reference == ref,
-            RaffleEntry.confirmed == False
-        ))
+        # 🔎 Find unpaid raffle entry
+        q = await db.execute(
+            select(RaffleEntry).where(
+                RaffleEntry.reference == reference,
+                RaffleEntry.confirmed == False
+            )
+        )
         entry = q.scalar_one_or_none()
 
         if not entry:
-            return {"status": "no entry"}
+            return {"status": "no_entry"}
 
-        # Mark paid
+        # ✅ Mark as paid
         await db.execute(
             update(RaffleEntry)
             .where(RaffleEntry.id == entry.id)
             .values(confirmed=True)
         )
 
-        # Add tickets
+        # 🎟 Issue tickets
         for _ in range(entry.quantity):
             await db.execute(
-                Ticket.__table__.insert().values(user_id=entry.user_id)
+                insert(Ticket).values(user_id=entry.user_id)
             )
+
+        # 🔎 Get Telegram user
+        q = await db.execute(select(User).where(User.id == entry.user_id))
+        user = q.scalar_one()
 
         await db.commit()
 
-    # Notify user
-    await bot.send_message(
-        entry.user_id,
-        "🎉 Payment confirmed! Your raffle tickets have been issued."
-    )
+    # 📩 Notify user on Telegram
+    try:
+        await bot.send_message(
+            int(user.telegram_id),
+            "🎉 <b>Payment Confirmed!</b>\n\n"
+            f"🎟 Tickets issued: {entry.quantity}\n"
+            "Good luck 🍀",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print("Telegram notify failed:", e)
 
     return {"status": "success"}
